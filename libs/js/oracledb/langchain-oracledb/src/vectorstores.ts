@@ -489,6 +489,7 @@ export class OracleVS extends VectorStore {
    * @param vectors The vectors to add.
    * @param documents The documents associated with the vectors.
    * @param options
+   * ** Add { upsert?: boolean } to do upsert
    * @returns Promise that resolves when the vectors have been added.
    */
   public async addVectors(
@@ -529,11 +530,12 @@ export class OracleVS extends VectorStore {
           embedding: new Float32Array(vectors[index]),
         });
       }
-      /**
-       * MERGE logic:
-       * We use a dummy DUAL-based subquery to provide the source values for the merge.
-       */
-      const sql = `
+
+      const isUpsert = options?.upsert ?? false; // Default to false for better performance
+      const insertSql = `
+        INSERT INTO ${this.tableName} (external_id, embedding, text, metadata)
+        VALUES (:ext_id, :embedding, :text, :metadata)`;
+      const mergeSql = `
       MERGE INTO ${this.tableName} t
       USING (
         SELECT :ext_id as external_id, :embedding as embedding,
@@ -548,6 +550,8 @@ export class OracleVS extends VectorStore {
       WHEN NOT MATCHED THEN
         INSERT (external_id, embedding, metadata, text)
         VALUES (s.external_id, s.embedding, s.metadata, s.text)`;
+
+      const sql = isUpsert ? mergeSql : insertSql;
       const executeOptions = {
         bindDefs: {
           ext_id: { type: oracledb.STRING, maxSize: 255 },
