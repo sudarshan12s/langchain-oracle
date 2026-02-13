@@ -602,7 +602,7 @@ export class OracleVS extends VectorStore {
       const bindValues: any = [convertedEmbedding];
 
       let sqlQuery = `
-      SELECT /*+ VECTOR_INDEX_TRANSFORM(ORAVS_DOCUMENTS) */
+      SELECT /*+ VECTOR_INDEX_TRANSFORM(${this.tableName}) */
         id,
         text,
         metadata,
