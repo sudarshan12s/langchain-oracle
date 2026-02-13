@@ -98,14 +98,6 @@ describe("OracleVectorStore", () => {
     oraclevs = new OracleVS(embedder, dbConfig);
     await oraclevs.initialize();
 
-    // create Index so that vector index is being used.
-    await createIndex(connection as oracledb.Connection, oraclevs, {
-      idxName: "embeddings_idx",
-      idxType: "IVF",
-      neighborPart: 64,
-      accuracy: 90,
-    });
-
     const docs = [
       new Document({ pageContent: "hello", metadata: { a: 2 } }),
       new Document({ pageContent: "car", metadata: { a: 1 } }),
@@ -261,6 +253,14 @@ describe("OracleVectorStore", () => {
   test("should handle simple conditions with and without _and clause", async () => {
     oraclevs = new OracleVS(embedder, dbConfig);
     await oraclevs.initialize();
+
+    // create Index so that vector index is being used.
+    await createIndex(connection as oracledb.Connection, oraclevs, {
+      idxName: "embeddings_idx",
+      idxType: "IVF",
+      neighborPart: 64,
+      accuracy: 90,
+    });
 
     // Sample documents
     const docs = [
