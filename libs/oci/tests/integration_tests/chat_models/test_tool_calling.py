@@ -4,7 +4,7 @@
 """Integration tests for tool calling with OCI Generative AI chat models.
 
 These tests verify that tool calling works correctly without infinite loops
-for both Meta and Cohere models after receiving tool results.
+for Meta, Cohere, and Gemini models after receiving tool results.
 
 ## Prerequisites
 
@@ -49,18 +49,28 @@ pytest tests/integration_tests/chat_models/test_tool_calling.py \
 1. **No Infinite Loops**: Models stop calling tools after receiving results
 2. **Proper Tool Flow**: Tool called → Results received → Final response generated
 3. **Fix Works**: `tool_choice="none"` is set when ToolMessages are present
-4. **Multi-Vendor**: Works for both Meta Llama and Cohere models
+4. **Multi-Vendor**: Works for Meta Llama, Cohere, and Gemini models
+5. **Gemini Parallel Tool Calls**: Flattening works for parallel tool calls
 """
 
 import os
+from typing import List
 
 import pytest
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import StructuredTool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from langchain_oci.chat_models import ChatOCIGenAI
+
+# --------------- tool functions ---------------
 
 
 def get_weather(city: str) -> str:
@@ -69,8 +79,77 @@ def get_weather(city: str) -> str:
         "chicago": "Sunny, 65°F",
         "new york": "Cloudy, 60°F",
         "san francisco": "Foggy, 58°F",
+        "new york city": "Cloudy, 60°F",
+        "los angeles": "Cloudy, 65F",
+        "london": "Overcast, 50F",
+        "tokyo": "Clear, 68F",
     }
     return weather_data.get(city.lower(), f"Weather data not available for {city}")
+
+
+def get_time(city: str) -> str:
+    """Get the current local time in a city."""
+    time_data = {
+        "new york": "3:00 PM EST",
+        "new york city": "3:00 PM EST",
+        "los angeles": "12:00 PM PST",
+        "chicago": "2:00 PM CST",
+        "london": "8:00 PM GMT",
+        "tokyo": "5:00 AM JST",
+    }
+    return time_data.get(city.lower(), f"Time unavailable for {city}")
+
+
+TOOL_DISPATCH = {"get_weather": get_weather, "get_time": get_time}
+
+
+def _execute_tool_calls(response) -> List[ToolMessage]:
+    """Execute all tool calls in a response and return ToolMessages."""
+    return [
+        ToolMessage(
+            content=TOOL_DISPATCH.get(tc["name"], lambda **_: "unknown")(**tc["args"]),
+            tool_call_id=tc["id"],
+        )
+        for tc in response.tool_calls
+    ]
+
+
+# --------------- fixtures ---------------
+
+
+def _make_gemini_llm(model_id: str) -> ChatOCIGenAI:
+    """Create a Gemini ChatOCIGenAI for the given model."""
+    compartment_id = os.environ.get("OCI_COMPARTMENT_ID")
+    if not compartment_id:
+        pytest.skip("OCI_COMPARTMENT_ID not set")
+
+    region = os.getenv("OCI_REGION", "us-chicago-1")
+    endpoint = f"https://inference.generativeai.{region}.oci.oraclecloud.com"
+    return ChatOCIGenAI(
+        model_id=model_id,
+        service_endpoint=endpoint,
+        compartment_id=compartment_id,
+        model_kwargs={"max_tokens": 256},
+        auth_type=os.environ.get("OCI_AUTH_TYPE", "API_KEY"),
+        auth_profile=os.environ.get("OCI_CONFIG_PROFILE", "API_KEY_AUTH"),
+        auth_file_location=os.path.expanduser("~/.oci/config"),
+    )
+
+
+@pytest.fixture
+def gemini_llm():
+    """Gemini 2.5 Flash instance."""
+    return _make_gemini_llm("google.gemini-2.5-flash")
+
+
+@pytest.fixture
+def time_tool():
+    """Time tool for testing parallel tool calls."""
+    return StructuredTool.from_function(
+        func=get_time,
+        name="get_time",
+        description="Get the current local time in a city.",
+    )
 
 
 @pytest.fixture
@@ -498,3 +577,229 @@ def test_multi_step_tool_orchestration(model_id: str):
     # 1. Made multiple tool calls (multi-step orchestration)
     # 2. Stopped within the max_sequential_tool_calls limit
     # 3. Did not loop infinitely
+
+
+# --------------- Gemini parallel tool call tests ---------------
+
+
+@pytest.mark.requires("oci")
+def test_gemini_parallel_tool_calls_manual(gemini_llm):
+    """Direct reproduction of the Gemini parallel tool call bug.
+
+    Without the flattening fix, step 2 fails with 400 INVALID_ARGUMENT:
+    "Please ensure that the number of function response parts is equal
+    to the number of function call parts of the function call turn."
+    """
+    llm = gemini_llm.bind_tools([get_weather, get_time])
+
+    response = llm.invoke(
+        "What is the weather AND the current time in New York City? Call both tools."
+    )
+
+    if not response.tool_calls:
+        pytest.skip("Model did not make any tool calls")
+    if len(response.tool_calls) < 2:
+        pytest.skip(
+            f"Model made {len(response.tool_calls)} tool call(s), "
+            "need 2+ to test parallel flattening"
+        )
+
+    messages = [
+        HumanMessage(
+            content=(
+                "What is the weather AND the current time in "
+                "New York City? Call both tools."
+            )
+        ),
+        response,
+        *_execute_tool_calls(response),
+    ]
+
+    final = llm.invoke(messages)
+    assert final.content, "Gemini should return a final text response"
+
+
+@pytest.mark.requires("oci")
+def test_gemini_agent_with_parallel_tools(gemini_llm, weather_tool, time_tool):
+    """Full LangGraph agent loop with Gemini parallel tool calls."""
+    tools = [weather_tool, time_tool]
+    tool_node = ToolNode(tools=tools)
+    model_with_tools = gemini_llm.bind_tools(tools)
+
+    def call_model(state: MessagesState):
+        return {"messages": [model_with_tools.invoke(state["messages"])]}
+
+    def should_continue(state: MessagesState):
+        last = state["messages"][-1]
+        return "tools" if hasattr(last, "tool_calls") and last.tool_calls else END
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("call_model", call_model)
+    builder.add_node("tools", tool_node)
+    builder.add_edge(START, "call_model")
+    builder.add_conditional_edges("call_model", should_continue, ["tools", END])
+    builder.add_edge("tools", "call_model")
+    agent = builder.compile()
+
+    result = agent.invoke(
+        {  # type: ignore[arg-type]
+            "messages": [
+                HumanMessage(
+                    content="What is the weather AND the time in New York? Use both."
+                )
+            ]
+        }
+    )
+
+    final = result["messages"][-1]
+    assert type(final).__name__ == "AIMessage"
+    assert final.content
+    assert not (hasattr(final, "tool_calls") and final.tool_calls)
+
+
+@pytest.mark.requires("oci")
+def test_gemini_single_tool_call_unaffected(gemini_llm):
+    """Single tool calls still work (flattening is a no-op)."""
+    llm = gemini_llm.bind_tools([get_weather])
+
+    response = llm.invoke("What is the weather in Chicago?")
+
+    if not response.tool_calls:
+        pytest.skip("Model did not make a tool call")
+
+    assert len(response.tool_calls) == 1
+    tc = response.tool_calls[0]
+    assert tc["name"] == "get_weather"
+
+    messages = [
+        HumanMessage(content="What is the weather in Chicago?"),
+        response,
+        ToolMessage(content=get_weather(**tc["args"]), tool_call_id=tc["id"]),
+    ]
+    final = llm.invoke(messages)
+    assert final.content
+
+
+@pytest.mark.requires("oci")
+@pytest.mark.parametrize(
+    "model_id", ["google.gemini-2.5-flash", "google.gemini-2.5-pro"]
+)
+def test_gemini_models_parallel_tool_calls(model_id: str):
+    """Verify parallel flattening works on both Gemini models."""
+    llm = _make_gemini_llm(model_id)
+    llm_with_tools = llm.bind_tools([get_weather, get_time])
+
+    response = llm_with_tools.invoke(
+        "What is the weather and time in Chicago? Call both tools."
+    )
+
+    if not response.tool_calls:
+        pytest.skip(f"{model_id}: Model did not make any tool calls")
+
+    messages = [
+        HumanMessage(content="What is the weather and time in Chicago? Call both."),
+        response,
+        *_execute_tool_calls(response),
+    ]
+
+    final = llm_with_tools.invoke(messages)
+    assert final.content, f"{model_id}: should return a final response"
+
+
+@pytest.mark.requires("oci")
+def test_gemini_result_correctness(gemini_llm):
+    """Verify tool results are correctly paired after flattening."""
+    llm = gemini_llm.bind_tools([get_weather])
+
+    messages: List[BaseMessage] = [
+        HumanMessage(content="What is the weather in Tokyo and London?"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "tc_tokyo", "name": "get_weather", "args": {"city": "Tokyo"}},
+                {"id": "tc_london", "name": "get_weather", "args": {"city": "London"}},
+            ],
+        ),
+        ToolMessage(content="Clear, 68F", tool_call_id="tc_tokyo"),
+        ToolMessage(content="Overcast, 50F", tool_call_id="tc_london"),
+    ]
+
+    final = llm.invoke(messages)
+    assert final.content
+
+    content_lower = final.content.lower()
+    assert any(w in content_lower for w in ["68", "clear"]), (
+        f"Should mention Tokyo weather: {final.content}"
+    )
+    assert any(w in content_lower for w in ["50", "overcast"]), (
+        f"Should mention London weather: {final.content}"
+    )
+
+
+# --------------- Tool result guidance tests ---------------
+
+
+@pytest.mark.requires("oci")
+def test_meta_llama_tool_result_guidance():
+    """Test that tool_result_guidance helps Llama incorporate tool results.
+
+    Reproduces Issue #28: without tool_result_guidance, Llama outputs raw JSON
+    tool call syntax instead of natural language when using an agent.
+    With tool_result_guidance=True, a system message guides the model to
+    respond with natural language incorporating the tool results.
+    """
+    compartment_id = os.environ.get("OCI_COMPARTMENT_ID")
+    if not compartment_id:
+        pytest.skip("OCI_COMPARTMENT_ID not set")
+
+    endpoint = os.environ.get("OCI_GENAI_SERVICE_ENDPOINT")
+    if not endpoint:
+        region = os.getenv("OCI_REGION", "us-chicago-1")
+        endpoint = f"https://inference.generativeai.{region}.oci.oraclecloud.com"
+
+    chat = ChatOCIGenAI(
+        model_id="meta.llama-3.3-70b-instruct",
+        service_endpoint=endpoint,
+        compartment_id=compartment_id,
+        model_kwargs={"temperature": 0.0, "max_tokens": 500},
+        auth_type=os.environ.get("OCI_AUTH_TYPE", "SECURITY_TOKEN"),
+        auth_profile=os.environ.get("OCI_CONFIG_PROFILE", "DEFAULT"),
+        auth_file_location=os.path.expanduser("~/.oci/config"),
+        tool_result_guidance=True,
+    )
+
+    def _get_weather(city: str) -> str:
+        """Get weather for a given city."""
+        return f"It's always sunny in {city}!"
+
+    from typing import Any
+
+    from langchain.agents import create_agent
+
+    agent: Any = create_agent(
+        model=chat,
+        tools=[_get_weather],
+        system_prompt="You are a helpful assistant",
+    )
+
+    messages = [
+        SystemMessage(content="You are an AI assistant."),
+        HumanMessage(content="What is the weather in SF?"),
+    ]
+
+    response = agent.invoke({"messages": messages})
+    final_message = response["messages"][-1]
+
+    # Verify the model produced a final response
+    assert final_message.content, "Should have generated a response"
+
+    # Verify response is natural language, not raw JSON tool call syntax
+    content = final_message.content
+    # Check for raw JSON tool call syntax anywhere in response
+    assert '{"name"' not in content, (
+        f"Response contains raw JSON tool call syntax: {content[:200]}"
+    )
+    # Check for known Llama failure pattern where it re-explains tool calls
+    assert "incorrect assumption" not in content.lower(), (
+        f"Model failed to incorporate tool results: {content[:200]}"
+    )

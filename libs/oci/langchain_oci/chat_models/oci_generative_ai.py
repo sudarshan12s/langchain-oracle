@@ -48,8 +48,10 @@ from langchain_openai import ChatOpenAI
 from openai import DefaultHttpxClient
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
+from langchain_oci.chat_models.async_mixin import ChatOCIGenAIAsyncMixin
 from langchain_oci.chat_models.providers import (
     CohereProvider,
+    GeminiProvider,
     GenericProvider,
     MetaProvider,
     Provider,
@@ -84,7 +86,7 @@ def _build_headers(
     return headers
 
 
-class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
+class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
     """ChatOCIGenAI chat model integration.
 
     Setup:
@@ -170,7 +172,9 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
         """Mapping from provider name to provider instance."""
         return {
             "cohere": CohereProvider(),
+            "google": GeminiProvider(),
             "meta": MetaProvider(),
+            "openai": GenericProvider(),
             "generic": GenericProvider(),
         }
 
@@ -205,7 +209,11 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
             ) from ex
 
         oci_params = self._provider.messages_to_oci_params(
-            messages, max_sequential_tool_calls=self.max_sequential_tool_calls, **kwargs
+            messages,
+            max_sequential_tool_calls=self.max_sequential_tool_calls,
+            tool_result_guidance=self.tool_result_guidance,
+            model_id=self.model_id,
+            **kwargs,
         )
 
         oci_params["is_stream"] = stream
@@ -214,11 +222,16 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
         if stop is not None:
             _model_kwargs[self._provider.stop_sequence_key] = stop
 
+        chat_params = {**_model_kwargs, **kwargs, **oci_params}
+
+        # Apply provider-specific parameter transformations
+        chat_params = self._provider.normalize_params(chat_params)
+
         # Warn if using max_tokens with OpenAI models
         if (
             self.model_id
             and self.model_id.startswith("openai.")
-            and "max_tokens" in _model_kwargs
+            and "max_tokens" in chat_params
         ):
             import warnings
 
@@ -228,8 +241,6 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
                 UserWarning,
                 stacklevel=2,
             )
-
-        chat_params = {**_model_kwargs, **kwargs, **oci_params}
 
         if not self.model_id:
             raise ValueError("Model ID is required for chat.")
@@ -484,7 +495,14 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
         if stop is not None:
             content = enforce_stop_tokens(content, stop)
 
+        raw_tool_calls = self._provider.chat_tool_calls(response)
+
         generation_info = self._provider.chat_generation_info(response)
+
+        if raw_tool_calls:
+            generation_info["tool_calls"] = self._provider.format_response_tool_calls(
+                raw_tool_calls
+            )
 
         llm_output = {
             "model_id": response.data.model_id,
@@ -493,10 +511,10 @@ class ChatOCIGenAI(BaseChatModel, OCIGenAIBase):
             "content-length": response.headers["content-length"],
         }
         tool_calls = []
-        if "tool_calls" in generation_info:
+        if raw_tool_calls:
             tool_calls = [
                 OCIUtils.convert_oci_tool_call_to_langchain(tool_call)
-                for tool_call in self._provider.chat_tool_calls(response)
+                for tool_call in raw_tool_calls
             ]
 
         # Create usage_metadata if usage information is available

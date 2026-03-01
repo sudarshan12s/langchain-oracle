@@ -62,7 +62,7 @@ class CohereProvider(Provider):
         }
 
         self.oci_response_json_schema = models.ResponseJsonSchema
-        self.oci_json_schema_response_format = models.JsonSchemaResponseFormat
+        self.oci_cohere_response_json_format = models.CohereResponseJsonFormat
         self.chat_api_format = models.BaseChatRequest.API_FORMAT_COHERE
 
         # V2 API classes for vision support (cohere.command-a-vision)
@@ -75,6 +75,10 @@ class CohereProvider(Provider):
         self.oci_image_content_v2 = None
         self.oci_image_url_v2 = None
         self.chat_api_format_v2 = None
+
+    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize parameters. Returns params unchanged for Cohere."""
+        return params
 
     def _load_v2_classes(self) -> None:
         """Lazy load Cohere V2 API classes for vision support.
@@ -114,18 +118,89 @@ class CohereProvider(Provider):
                 "Cohere models."
             ) from e
 
+    def oci_json_schema_response_format(self, json_schema: Any) -> Any:
+        """Create CohereResponseJsonFormat with the schema dict.
+
+        CohereResponseJsonFormat expects a plain dict for the schema parameter.
+        This method extracts the schema dict from the ResponseJsonSchema object.
+
+        Args:
+            json_schema: ResponseJsonSchema object or dict
+
+        Returns:
+            CohereResponseJsonFormat object
+
+        Raises:
+            ValueError: If json_schema is None or invalid
+        """
+        if json_schema is None:
+            raise ValueError("json_schema cannot be None")
+
+        # Extract the actual schema dict from the ResponseJsonSchema object
+        # CohereResponseJsonFormat expects: schema={"type": "object", "properties":...}
+        if hasattr(json_schema, "schema"):
+            schema_dict = json_schema.schema
+            if schema_dict is None:
+                raise ValueError("ResponseJsonSchema.schema cannot be None")
+        else:
+            schema_dict = json_schema
+
+        if not isinstance(schema_dict, dict):
+            raise ValueError(f"Schema must be a dict, got {type(schema_dict)}")
+
+        return self.oci_cohere_response_json_format(schema=schema_dict)
+
     def chat_response_to_text(self, response: Any) -> str:
-        """Extract text from a Cohere chat response."""
-        return response.data.chat_response.text
+        """Extract text from a Cohere chat response (V1 or V2)."""
+        chat_resp = response.data.chat_response
+        # V1 API: CohereChatResponse has .text attribute
+        if hasattr(chat_resp, "text"):
+            return chat_resp.text or ""
+        # V2 API: CohereChatResponseV2 has .message.content (list of content blocks)
+        if hasattr(chat_resp, "message") and chat_resp.message:
+            content = chat_resp.message.content
+            if content:
+                # Extract text from all TEXT type content blocks
+                texts = [
+                    block.text
+                    for block in content
+                    if hasattr(block, "type") and block.type == "TEXT" and block.text
+                ]
+                return "".join(texts)
+        return ""
+
+    def chat_response_to_text_from_dict(self, response_data: Dict[str, Any]) -> str:
+        """Extract text from Cohere chat response dict (async path, V1 or V2)."""
+        chat_response = response_data.get("chatResponse", {})
+        # V1 API: text at top level
+        if "text" in chat_response:
+            return chat_response.get("text", "")
+        # V2 API: text in message.content[].text
+        message = chat_response.get("message", {})
+        content = message.get("content", [])
+        if isinstance(content, list):
+            texts = [
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "TEXT"
+            ]
+            return "".join(texts)
+        return ""
 
     def chat_stream_to_text(self, event_data: Dict) -> str:
-        """Extract text from a Cohere chat stream event."""
+        """Extract text from a Cohere chat stream event (V1 or V2)."""
+        # Return empty string if finish reason or tool calls are present
+        if "finishReason" in event_data or "toolCalls" in event_data:
+            return ""
+        # V1 API: text at top level
         if "text" in event_data:
-            # Return empty string if finish reason or tool calls are present in stream
-            if "finishReason" in event_data or "toolCalls" in event_data:
-                return ""
-            else:
-                return event_data["text"]
+            return event_data["text"]
+        # V2 API: text in message.content[].text
+        message = event_data.get("message")
+        if message:
+            for block in message.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "TEXT":
+                    return block.get("text", "")
         return ""
 
     def is_chat_stream_end(self, event_data: Dict) -> bool:
@@ -133,29 +208,31 @@ class CohereProvider(Provider):
         return "finishReason" in event_data
 
     def chat_generation_info(self, response: Any) -> Dict[str, Any]:
-        """Extract generation information from a Cohere chat response."""
+        """Extract generation information from a Cohere chat response (V1 or V2)."""
+        chat_resp = response.data.chat_response
         generation_info: Dict[str, Any] = {
-            "documents": response.data.chat_response.documents,
-            "citations": response.data.chat_response.citations,
-            "search_queries": response.data.chat_response.search_queries,
-            "is_search_required": response.data.chat_response.is_search_required,
-            "finish_reason": response.data.chat_response.finish_reason,
+            "finish_reason": getattr(chat_resp, "finish_reason", None),
         }
 
-        # Include token usage if available
-        if (
-            hasattr(response.data.chat_response, "usage")
-            and response.data.chat_response.usage
-        ):
-            generation_info["total_tokens"] = (
-                response.data.chat_response.usage.total_tokens
-            )
+        # V1-specific fields (not present in V2)
+        if hasattr(chat_resp, "documents"):
+            generation_info["documents"] = chat_resp.documents
+        if hasattr(chat_resp, "citations"):
+            generation_info["citations"] = chat_resp.citations
+        if hasattr(chat_resp, "search_queries"):
+            generation_info["search_queries"] = chat_resp.search_queries
+        if hasattr(chat_resp, "is_search_required"):
+            generation_info["is_search_required"] = chat_resp.is_search_required
 
-        # Include tool calls if available
-        if self.chat_tool_calls(response):
-            generation_info["tool_calls"] = self.format_response_tool_calls(
-                self.chat_tool_calls(response)
-            )
+        # V2: citations are in message.citations
+        if hasattr(chat_resp, "message") and chat_resp.message:
+            if hasattr(chat_resp.message, "citations") and chat_resp.message.citations:
+                generation_info["citations"] = chat_resp.message.citations
+
+        # Include token usage if available
+        if hasattr(chat_resp, "usage") and chat_resp.usage:
+            generation_info["total_tokens"] = chat_resp.usage.total_tokens
+
         return generation_info
 
     def chat_stream_generation_info(self, event_data: Dict) -> Dict[str, Any]:
@@ -169,8 +246,15 @@ class CohereProvider(Provider):
         return {k: v for k, v in generation_info.items() if v is not None}
 
     def chat_tool_calls(self, response: Any) -> List[Any]:
-        """Retrieve tool calls from a Cohere chat response."""
-        return response.data.chat_response.tool_calls
+        """Retrieve tool calls from a Cohere chat response (V1 or V2)."""
+        chat_resp = response.data.chat_response
+        # V1 API: tool_calls directly on chat_response
+        if hasattr(chat_resp, "tool_calls") and chat_resp.tool_calls:
+            return chat_resp.tool_calls
+        # V2 API: tool_calls on message
+        if hasattr(chat_resp, "message") and chat_resp.message:
+            return getattr(chat_resp.message, "tool_calls", None) or []
+        return []
 
     def chat_stream_tool_calls(self, event_data: Dict) -> List[Any]:
         """Retrieve tool calls from Cohere stream event data."""
@@ -349,6 +433,12 @@ class CohereProvider(Provider):
         }
         return {k: v for k, v in oci_params.items() if v is not None}
 
+    def _is_vision_model(self, model_id: Optional[str]) -> bool:
+        """Check if the model is a Cohere vision model requiring V2 API."""
+        if not model_id:
+            return False
+        return "vision" in model_id.lower()
+
     def messages_to_oci_params(
         self, messages: Sequence[BaseMessage], **kwargs: Any
     ) -> Dict[str, Any]:
@@ -357,8 +447,10 @@ class CohereProvider(Provider):
 
         This includes conversion of chat history and tool call results.
         """
-        # Check if vision content is present - if so, use V2 API
-        if self._has_vision_content(messages):
+        # Vision models require V2 API always, not just for image content
+        model_id = kwargs.get("model_id")
+        if self._is_vision_model(model_id) or self._has_vision_content(messages):
+            self._load_v2_classes()
             return self._messages_to_oci_params_v2(messages, **kwargs)
 
         # Cohere models don't support parallel tool calls

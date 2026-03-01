@@ -23,23 +23,170 @@ This repository includes two main integration categories:
 
 ## OCI Generative AI Examples
 
-### 1. Use a Chat Model
+OCI Generative AI supports two types of models:
+- **On-Demand Models**: Pre-hosted foundation models.
+- **DAC Models**: Models hosted on Dedicated AI Clusters (DAC), including custom models imported from Hugging Face or Object Storage
+
+### 1a. Use a Chat Model (On-Demand)
 
 `ChatOCIGenAI` class exposes chat models from OCI Generative AI.
 
 ```python
 from langchain_oci import ChatOCIGenAI
 
+# Using a pre-hosted on-demand model
 llm = ChatOCIGenAI(
-        model_id="MY_MODEL_ID",
-        service_endpoint="MY_SERVICE_ENDPOINT",
-        compartment_id="MY_COMPARTMENT_ID",
-        model_kwargs={"max_tokens": 1024}, # Use max_completion_tokens instead of max_tokens for OpenAI models
-        auth_profile="MY_AUTH_PROFILE",
-        is_stream=True,
-        auth_type="SECURITY_TOKEN"
-llm.invoke("Sing a ballad of LangChain.")
+    model_id="MY_MODEL_ID",  # Pre-hosted model ID
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",  # Regional endpoint
+    compartment_id="ocid1.compartment.oc1..xxxxx",  # Your compartment OCID
+    model_kwargs={"max_tokens": 1024},  # Use max_completion_tokens for OpenAI models
+    auth_profile="MY_AUTH_PROFILE",
+    is_stream=True,
+    auth_type="SECURITY_TOKEN"
+)
+
+response = llm.invoke("Sing a ballad of LangChain.")
 ```
+
+### 1b. Use a Chat Model (Imported Model on DAC)
+
+For models you've imported and deployed on a Dedicated AI Cluster:
+
+```python
+from langchain_oci import ChatOCIGenAI
+
+# Using an imported model on Dedicated AI Cluster
+llm = ChatOCIGenAI(
+    model_id="ocid1.generativeaiendpoint.oc1.us-chicago-1.xxxxx",  # Endpoint OCID from your DAC
+    provider="generic",  # Provider type: "cohere", "google", "meta", or "generic"
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",  # Regional endpoint
+    compartment_id="ocid1.compartment.oc1..xxxxx",  # Your compartment OCID
+    auth_type="SECURITY_TOKEN",  # Authentication type
+    auth_profile="MY_AUTH_PROFILE",
+    model_kwargs={"temperature": 0.7, "max_tokens": 500},
+)
+
+response = llm.invoke("Hello, what is your name?")
+```
+
+**Additional Arguments for Imported Models:**
+- `model_id`: Use the **endpoint OCID** (starts with `ocid1.generativeaiendpoint`)
+- `provider`: Provider type for your model. Available providers:
+  - `"cohere"`: For Cohere models (CohereProvider)
+  - `"google"`: For Google Gemini models (GeminiProvider) - automatically handles `max_output_tokens` to `max_tokens` parameter mapping
+  - `"meta"`: For Meta Llama models (MetaProvider)
+  - `"generic"`: Default for other models including OpenAI (GenericProvider)
+  If not specified, the provider is auto-detected from the model_id prefix.
+- `service_endpoint`: Use regional API endpoint (not the internal cluster URL)
+
+
+### 1c. Multimodal Content (Vision, PDF, Video, Audio)
+
+`ChatOCIGenAI` supports multimodal content types including images, PDFs, video, and audio. Support varies by model:
+
+| Model Family | Images | PDF | Video | Audio |
+|--------------|--------|-----|-------|-------|
+| **Google Gemini** | ✓ | ✓ | ✓ | ✓ |
+| **Meta Llama Vision** | ✓ | - | - | - |
+| **Cohere Vision** | ✓ | - | - | - |
+| **OpenAI GPT-5.x** | ✓ | - | - | - |
+
+<sub>**Note:** Other models may have limited or no multimodal support. Check your model's documentation.</sub>
+
+#### Image Analysis
+
+```python
+import base64
+from langchain_core.messages import HumanMessage
+from langchain_oci import ChatOCIGenAI
+
+llm = ChatOCIGenAI(
+    model_id="meta.llama-3.2-90b-vision-instruct",  # Any vision model
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+    compartment_id="MY_COMPARTMENT_ID",
+)
+
+with open("image.png", "rb") as f:
+    image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+message = HumanMessage(content=[
+    {"type": "text", "text": "Describe this image"},
+    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+])
+response = llm.invoke([message])
+```
+
+#### PDF Document Analysis
+
+```python
+import base64
+from langchain_core.messages import HumanMessage
+from langchain_oci import ChatOCIGenAI
+
+llm = ChatOCIGenAI(
+    model_id="google.gemini-2.5-flash",  # Gemini supports PDF
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+    compartment_id="MY_COMPARTMENT_ID",
+)
+
+with open("document.pdf", "rb") as f:
+    pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+message = HumanMessage(content=[
+    {"type": "text", "text": "Summarize this PDF document"},
+    {"type": "document_url", "document_url": {"url": f"data:application/pdf;base64,{pdf_b64}"}},
+])
+response = llm.invoke([message])
+```
+
+#### Video Analysis
+
+```python
+import base64
+from langchain_core.messages import HumanMessage
+from langchain_oci import ChatOCIGenAI
+
+llm = ChatOCIGenAI(
+    model_id="google.gemini-2.5-flash",
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+    compartment_id="MY_COMPARTMENT_ID",
+)
+
+with open("video.mp4", "rb") as f:
+    video_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+message = HumanMessage(content=[
+    {"type": "text", "text": "What happens in this video?"},
+    {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{video_b64}"}},
+])
+response = llm.invoke([message])
+```
+
+#### Audio Analysis
+
+```python
+import base64
+from langchain_core.messages import HumanMessage
+from langchain_oci import ChatOCIGenAI
+
+llm = ChatOCIGenAI(
+    model_id="google.gemini-2.5-flash",
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+    compartment_id="MY_COMPARTMENT_ID",
+)
+
+with open("audio.wav", "rb") as f:
+    audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+message = HumanMessage(content=[
+    {"type": "text", "text": "Transcribe this audio"},
+    {"type": "audio_url", "audio_url": {"url": f"data:audio/wav;base64,{audio_b64}"}},
+])
+response = llm.invoke([message])
+```
+
+<sub>**Note:** Document, video, and audio content requires a multimodal-capable model. Check your model's documentation for supported content types.</sub>
+
 
 ### 2. Use a Completion Model
 `OCIGenAI` class exposes LLMs from OCI Generative AI.
@@ -61,10 +208,38 @@ embeddings = OCIGenAIEmbeddings()
 embeddings.embed_query("What is the meaning of life?")
 ```
 
+### 3b. Use Image Embeddings (Multimodal)
+`OCIGenAIEmbeddings` supports image embeddings with multimodal models like `cohere.embed-v4.0`.
+
+```python
+from langchain_oci import OCIGenAIEmbeddings
+
+embeddings = OCIGenAIEmbeddings(
+    model_id="cohere.embed-v4.0",
+    service_endpoint="https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+    compartment_id="ocid1.compartment.oc1..xxxxx",
+)
+
+# Embed a single image (from file path, bytes, or data URI)
+image_vector = embeddings.embed_image("path/to/image.png")
+
+# Embed multiple images in a batch
+image_vectors = embeddings.embed_image_batch([
+    "path/to/image1.png",
+    "path/to/image2.jpg",
+    b"\x89PNG...",  # raw bytes
+])
+
+# Image and text embeddings share the same vector space for cross-modal retrieval
+text_vector = embeddings.embed_query("a photo of a cat")
+```
+
+<sub>**Note:** Image embeddings require a multimodal model. Use `IMAGE_EMBEDDING_MODELS` to check supported models.</sub>
+
 ### 4. Use Structured Output
 `ChatOCIGenAI` supports structured output.
 
-<sub>**Note:** The default method is `function_calling`. If default method returns `None` (e.g. for Gemini models), try `json_schema` or `json_mode`.</sub>
+<sub>**Note:** The default method is `function_calling`. If default method returns `None` (e.g., for Google Gemini models using GeminiProvider), try `json_schema` or `json_mode`.</sub>
 
 ```python
 from langchain_oci import ChatOCIGenAI

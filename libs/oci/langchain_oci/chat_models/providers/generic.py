@@ -3,7 +3,22 @@
 
 """Generic provider implementation for OCI Generative AI.
 
-Supports Meta Llama, xAI Grok, OpenAI, and Mistral models.
+Supports Meta Llama, xAI Grok, OpenAI, Mistral, and Google Gemini models.
+
+This module provides:
+- GenericProvider: Base provider for generic API (Meta, xAI, Mistral, OpenAI)
+- MetaProvider: For Meta Llama models (extends GenericProvider)
+- GeminiProvider: For Google Gemini models (handles max_output_tokens mapping)
+
+Multimodal Content Support:
+- Text: Standard text content
+- Images: Base64 or URL-based images (Meta Llama Vision, Gemini, Cohere, xAI)
+- Documents: PDF and other document formats (multimodal-capable models)
+- Video: MP4 and other video formats (multimodal-capable models)
+- Audio: Audio file formats (multimodal-capable models)
+
+Note: Document, video, and audio content require multimodal-capable models.
+Currently, Google Gemini models have the broadest multimodal support on OCI.
 """
 
 import json
@@ -80,6 +95,13 @@ class GenericProvider(Provider):
 
     stop_sequence_key: str = "stop"
 
+    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize parameters. Returns params unchanged by default.
+
+        Subclasses can override for provider-specific transformations.
+        """
+        return params
+
     @property
     def supports_parallel_tool_calls(self) -> bool:
         """GenericProvider models support parallel tool calling."""
@@ -97,11 +119,23 @@ class GenericProvider(Provider):
             "TOOL": models.ToolMessage,
         }
 
-        # Content models
+        # Content models - Text and Image
         self.oci_chat_message_content = models.ChatContent
         self.oci_chat_message_text_content = models.TextContent
         self.oci_chat_message_image_content = models.ImageContent
         self.oci_chat_message_image_url = models.ImageUrl
+
+        # Content models - Document (PDF, etc.) - for multimodal-capable models
+        self.oci_chat_message_document_content = models.DocumentContent
+        self.oci_chat_message_document_url = models.DocumentUrl
+
+        # Content models - Video - for multimodal-capable models
+        self.oci_chat_message_video_content = models.VideoContent
+        self.oci_chat_message_video_url = models.VideoUrl
+
+        # Content models - Audio - for multimodal-capable models
+        self.oci_chat_message_audio_content = models.AudioContent
+        self.oci_chat_message_audio_url = models.AudioUrl
 
         # Tool-related models
         self.oci_function_definition = models.FunctionDefinition
@@ -119,28 +153,59 @@ class GenericProvider(Provider):
         self.chat_api_format = models.BaseChatRequest.API_FORMAT_GENERIC
 
     def chat_response_to_text(self, response: Any) -> str:
-        """Extract text from Meta chat response."""
-        message = response.data.chat_response.choices[0].message
-        content = message.content[0] if message.content else None
-        return content.text if content else ""
+        """Extract text from chat response, or '' if unavailable."""
+        chat_resp = getattr(response.data, "chat_response", None)
+        choices = getattr(chat_resp, "choices", None)
+        if not choices:
+            return ""
+        msg = getattr(choices[0], "message", None)
+        if not msg or not msg.content:
+            return ""
+        # Concatenate all text content parts to avoid dropping later chunks.
+        return "".join(part.text for part in msg.content if getattr(part, "text", None))
+
+    def chat_response_to_text_from_dict(self, response_data: Dict[str, Any]) -> str:
+        """Extract text from chat response dict (async path)."""
+        chat_response = response_data.get("chatResponse", {})
+        choices = chat_response.get("choices", [])
+        if not choices:
+            return ""
+        content = choices[0].get("message", {}).get("content", [])
+        if not content:
+            return ""
+        if isinstance(content, list):
+            return "".join(
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "TEXT"
+            )
+        return str(content)
 
     def chat_stream_to_text(self, event_data: Dict) -> str:
         """Extract text from Meta chat stream event."""
         content = event_data.get("message", {}).get("content", None)
         if not content:
             return ""
-        return content[0].get("text", "")
+        return "".join(part.get("text", "") for part in content if part.get("text"))
 
     def is_chat_stream_end(self, event_data: Dict) -> bool:
         """Determine if Meta chat stream event indicates the end."""
         return "finishReason" in event_data
 
     def chat_generation_info(self, response: Any) -> Dict[str, Any]:
-        """Extract generation metadata from Meta chat response."""
+        """Extract generation metadata from chat response."""
+        choices = response.data.chat_response.choices
+        finish_reason = choices[0].finish_reason if choices else None
         generation_info: Dict[str, Any] = {
-            "finish_reason": response.data.chat_response.choices[0].finish_reason,
+            "finish_reason": finish_reason,
             "time_created": str(response.data.chat_response.time_created),
         }
+
+        # Surface reasoning_content from reasoning models (xAI Grok, OpenAI o1).
+        if choices and choices[0].message is not None:
+            reasoning = getattr(choices[0].message, "reasoning_content", None)
+            if reasoning:
+                generation_info["reasoning_content"] = reasoning
 
         # Include token usage if available
         if (
@@ -151,10 +216,6 @@ class GenericProvider(Provider):
                 response.data.chat_response.usage.total_tokens
             )
 
-        if self.chat_tool_calls(response):
-            generation_info["tool_calls"] = self.format_response_tool_calls(
-                self.chat_tool_calls(response)
-            )
         return generation_info
 
     def chat_stream_generation_info(self, event_data: Dict) -> Dict[str, Any]:
@@ -162,8 +223,11 @@ class GenericProvider(Provider):
         return {"finish_reason": event_data["finishReason"]}
 
     def chat_tool_calls(self, response: Any) -> List[Any]:
-        """Retrieve tool calls from Meta chat response."""
-        return response.data.chat_response.choices[0].message.tool_calls
+        """Retrieve tool calls from chat response."""
+        choices = response.data.chat_response.choices
+        if not choices or choices[0].message is None:
+            return []
+        return choices[0].message.tool_calls
 
     def chat_stream_tool_calls(self, event_data: Dict) -> List[Any]:
         """Retrieve tool calls from Meta stream event."""
@@ -180,12 +244,19 @@ class GenericProvider(Provider):
 
         formatted_tool_calls: List[Dict] = []
         for tool_call in tool_calls:
+            # Parse arguments with error handling for malformed JSON from LLM
+            try:
+                arguments = json.loads(tool_call.arguments)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, return raw string as arguments
+                # This allows downstream code to handle the error gracefully
+                arguments = {"_raw_arguments": tool_call.arguments}
             formatted_tool_calls.append(
                 {
                     "id": tool_call.id,
                     "function": {
                         "name": tool_call.name,
-                        "arguments": json.loads(tool_call.arguments),
+                        "arguments": arguments,
                     },
                     "type": "function",
                 }
@@ -238,6 +309,8 @@ class GenericProvider(Provider):
         Args:
             messages: List of LangChain BaseMessage objects
             **kwargs: Additional keyword arguments
+                model_id: Optional model ID for provider-specific handling.
+                    Gemini models require 1:1 function call/response pairing.
 
         Returns:
             Dict containing OCI chat parameters
@@ -245,6 +318,12 @@ class GenericProvider(Provider):
         Raises:
             ValueError: If message content is invalid
         """
+        # Gemini requires 1:1 function_call to function_response per turn.
+        # Flatten parallel tool calls into sequential pairs.
+        model_id = kwargs.get("model_id", "")
+        if model_id and model_id.startswith("google."):
+            messages = OCIUtils.flatten_parallel_tool_calls(messages)
+
         oci_messages = []
 
         for message in messages:
@@ -290,6 +369,31 @@ class GenericProvider(Provider):
                 oci_message = self.oci_chat_message[role](content=content)
             oci_messages.append(oci_message)
 
+        # BUGFIX (Issue #28): When tool results are present, inject a system
+        # message to guide models (especially Meta Llama) to incorporate tool
+        # results into their response. This prevents the model from outputting
+        # raw JSON tool-call syntax instead of a natural language answer.
+        has_tool_results = any(isinstance(msg, ToolMessage) for msg in messages)
+        if (
+            has_tool_results
+            and "tools" in kwargs
+            and kwargs.get("tool_result_guidance")
+        ):
+            guidance = self.oci_chat_message["SYSTEM"](
+                content=[
+                    self.oci_chat_message_text_content(
+                        text=(
+                            "You have received tool results above. Respond to "
+                            "the user with a helpful, natural language answer "
+                            "that incorporates the tool results. Do not output "
+                            "raw JSON or tool call syntax. If you need "
+                            "additional information, you may call another tool."
+                        )
+                    )
+                ]
+            )
+            oci_messages.append(guidance)
+
         result = {
             "messages": oci_messages,
             "api_format": self.chat_api_format,
@@ -318,20 +422,66 @@ class GenericProvider(Provider):
     ) -> List[Any]:
         """Process message content into OCI chat content format.
 
+        Supports multimodal content types:
+        - text: Plain text content
+        - image_url: Images (base64 or URL) - supported by vision models
+        - document_url / document / file: PDFs and documents
+        - video_url / video: Video files
+        - audio_url / audio: Audio files
+
+        Note: Document, video, and audio content require multimodal-capable models.
+        Check your model's documentation for supported content types.
+
         Args:
-            content: Message content as string or list
+            content: Message content as string or list of content items.
+                Each item can be a string or dict with 'type' key.
 
         Returns:
             List of OCI chat content objects
 
         Raises:
             ValueError: If content format is invalid
+
+        Examples:
+            # Text only
+            content = "Hello, world!"
+
+            # Image with text
+            content = [
+                {"type": "text", "text": "What's in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+            ]
+
+            # PDF document (requires multimodal-capable model)
+            content = [
+                {"type": "text", "text": "Summarize this PDF"},
+                {"type": "document_url", "document_url": {
+                    "url": "data:application/pdf;base64,..."
+                }}
+            ]
+
+            # Video (requires multimodal-capable model)
+            content = [
+                {"type": "text", "text": "Describe this video"},
+                {"type": "video_url", "video_url": {
+                    "url": "data:video/mp4;base64,..."
+                }}
+            ]
+
+            # Audio (requires multimodal-capable model)
+            content = [
+                {"type": "text", "text": "Transcribe this audio"},
+                {"type": "audio_url", "audio_url": {
+                    "url": "data:audio/wav;base64,..."
+                }}
+            ]
         """
         if isinstance(content, str):
             return [self.oci_chat_message_text_content(text=content)]
 
         if not isinstance(content, list):
             raise ValueError("Message content must be a string or a list of items.")
+
         processed_content = []
         for item in content:
             if isinstance(item, str):
@@ -339,7 +489,17 @@ class GenericProvider(Provider):
             elif isinstance(item, dict):
                 if "type" not in item:
                     raise ValueError("Dict content item must have a 'type' key.")
-                if item["type"] == "image_url":
+
+                content_type = item["type"]
+
+                # Text content
+                if content_type == "text":
+                    processed_content.append(
+                        self.oci_chat_message_text_content(text=item["text"])
+                    )
+
+                # Image content
+                elif content_type == "image_url":
                     processed_content.append(
                         self.oci_chat_message_image_content(
                             image_url=self.oci_chat_message_image_url(
@@ -347,12 +507,70 @@ class GenericProvider(Provider):
                             )
                         )
                     )
-                elif item["type"] == "text":
-                    processed_content.append(
-                        self.oci_chat_message_text_content(text=item["text"])
+
+                # Document content (PDF, etc.) - requires multimodal-capable model
+                elif content_type in ("document_url", "document", "file"):
+                    doc_data = (
+                        item.get("document_url")
+                        or item.get("document")
+                        or item.get("file")
+                        or item
                     )
+                    url = doc_data.get("url") if isinstance(doc_data, dict) else None
+                    if not url:
+                        raise ValueError(
+                            "Document content must have a 'url' field. "
+                            "Expected: {'type': 'document_url', "
+                            "'document_url': {'url': 'data:application/pdf;...'}}"
+                        )
+                    processed_content.append(
+                        self.oci_chat_message_document_content(
+                            document_url=self.oci_chat_message_document_url(url=url)
+                        )
+                    )
+
+                # Video content - requires multimodal-capable model
+                elif content_type in ("video_url", "video"):
+                    video_data = item.get("video_url") or item.get("video") or item
+                    url = (
+                        video_data.get("url") if isinstance(video_data, dict) else None
+                    )
+                    if not url:
+                        raise ValueError(
+                            "Video content must have a 'url' field. "
+                            "Expected: {'type': 'video_url', "
+                            "'video_url': {'url': 'data:video/mp4;base64,...'}}"
+                        )
+                    processed_content.append(
+                        self.oci_chat_message_video_content(
+                            video_url=self.oci_chat_message_video_url(url=url)
+                        )
+                    )
+
+                # Audio content - requires multimodal-capable model
+                elif content_type in ("audio_url", "audio"):
+                    audio_data = item.get("audio_url") or item.get("audio") or item
+                    url = (
+                        audio_data.get("url") if isinstance(audio_data, dict) else None
+                    )
+                    if not url:
+                        raise ValueError(
+                            "Audio content must have a 'url' field. "
+                            "Expected: {'type': 'audio_url', "
+                            "'audio_url': {'url': 'data:audio/wav;base64,...'}}"
+                        )
+                    processed_content.append(
+                        self.oci_chat_message_audio_content(
+                            audio_url=self.oci_chat_message_audio_url(url=url)
+                        )
+                    )
+
                 else:
-                    raise ValueError(f"Unsupported content type: {item['type']}")
+                    raise ValueError(
+                        f"Unsupported content type: {content_type}. "
+                        f"Supported types: text, image_url, document_url, "
+                        f"video_url, audio_url"
+                    )
             else:
                 raise ValueError(
                     f"Content items must be str or dict, got: {type(item)}"
@@ -532,3 +750,40 @@ class MetaProvider(GenericProvider):
     """Provider for Meta models. This provider is for backward compatibility."""
 
     pass
+
+
+class GeminiProvider(GenericProvider):
+    """Provider for Google Gemini models.
+
+    Handles Gemini-specific parameter requirements:
+    - max_output_tokens → max_tokens (Gemini SDK uses max_output_tokens,
+      but OCI API expects max_tokens)
+    """
+
+    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize Gemini parameters with warnings for mapped keys."""
+        import warnings
+
+        result = params.copy()
+
+        if "max_output_tokens" in result:
+            if "max_tokens" not in result:
+                result["max_tokens"] = result.pop("max_output_tokens")
+                warnings.warn(
+                    "Gemini models on OCI use `max_tokens`. "
+                    "Mapped `max_output_tokens` -> `max_tokens`.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+            else:
+                # Both provided - prefer max_tokens
+                result.pop("max_output_tokens")
+                warnings.warn(
+                    "Both `max_tokens` and `max_output_tokens` were provided "
+                    "for a Gemini model. Using `max_tokens` and ignoring "
+                    "`max_output_tokens`.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+
+        return result
