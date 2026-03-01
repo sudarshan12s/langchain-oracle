@@ -565,10 +565,10 @@ export class OracleVS extends VectorStore {
 
       // Commit once all inserts are queued up
       await connection.commit();
-      console.log("All documents have been inserted and committed.");
+      // console.log("All documents have been inserted and committed.");
       return finalIds;
     } catch (error: any) {
-      handleError(error);
+      return handleError(error);
     } finally {
       if (connection) {
         await this.retConnection(connection);
