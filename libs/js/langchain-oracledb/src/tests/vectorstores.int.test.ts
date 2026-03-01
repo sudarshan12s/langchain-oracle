@@ -7,7 +7,6 @@ import {
   beforeAll,
   beforeEach,
 } from "vitest";
-import { createHash } from "crypto";
 import { env } from "node:process";
 import { Document } from "@langchain/core/documents";
 import oracledb from "oracledb";
@@ -79,11 +78,11 @@ describe("OracleVectorStore", () => {
       });
 
       const embedding = await embedder.embedQuery(
-        "What is your favourite sport?"
+        "What is your favourite sport?",
       );
       const matches = await oraclevs.similaritySearchVectorWithScore(
         embedding,
-        1
+        1,
       );
 
       expect(matches).toHaveLength(1);
@@ -115,7 +114,7 @@ describe("OracleVectorStore", () => {
     const results2 = await oraclevs.similaritySearchWithScore(
       "hello!",
       1,
-      dbFilter
+      dbFilter,
     );
     expect(results2).toHaveLength(1);
   });
@@ -127,7 +126,7 @@ describe("OracleVectorStore", () => {
     const makeDoc = (
       content: string,
       author: string | string[],
-      category = "research/AI"
+      category = "research/AI",
     ) => ({
       pageContent: content,
       metadata: {
@@ -142,19 +141,19 @@ describe("OracleVectorStore", () => {
       makeDoc(
         "Alice discusses the application of machine learning and AI research in predicting football match outcomes.",
         ["Alice", "Bob"],
-        "sports"
+        "sports",
       ),
       makeDoc(
         "Geoffrey Hinton explores the future of deep learning and its impact on AI research.",
-        "Geoffrey Hinton"
+        "Geoffrey Hinton",
       ),
       makeDoc(
         "Yoshua Bengio presents breakthroughs in neural network architectures for natural language understanding.",
-        "Yoshua Bengio"
+        "Yoshua Bengio",
       ),
       makeDoc(
         "Andrew Ng shares insights on scaling AI education to democratize access to machine learning tools.",
-        "Andrew Ng"
+        "Andrew Ng",
       ),
     ];
 
@@ -165,7 +164,7 @@ describe("OracleVectorStore", () => {
     let results = await oraclevs.similaritySearch(
       "latest advances in AI research for education",
       1,
-      filter
+      filter,
     );
 
     expect(results).toHaveLength(1);
@@ -187,7 +186,7 @@ describe("OracleVectorStore", () => {
     results = await oraclevs.similaritySearch(
       "latest advances in AI research for education",
       1,
-      filter
+      filter,
     );
 
     expect(results).toHaveLength(1);
@@ -209,7 +208,7 @@ describe("OracleVectorStore", () => {
     results = await oraclevs.similaritySearch(
       "latest advances in AI research for education",
       5,
-      filter
+      filter,
     );
 
     expect(results).toHaveLength(3);
@@ -246,7 +245,7 @@ describe("OracleVectorStore", () => {
           pageContent:
             "Alice discusses the application of machine learning and AI research in predicting football match outcomes.",
         }),
-      ])
+      ]),
     );
   });
 
@@ -349,13 +348,13 @@ describe("OracleVectorStore", () => {
     // filter with $exists to return rows which do not contain price
     filter = { price: { $exists: false } };
     await expect(oraclevs.similaritySearch("test", 10, filter)).rejects.toThrow(
-      "No rows found"
+      "No rows found",
     );
 
     // filter with $exists for non-existing key
     filter = { cost: { $exists: true } };
     await expect(oraclevs.similaritySearch("test", 10, filter)).rejects.toThrow(
-      "No rows found"
+      "No rows found",
     );
   });
 
@@ -397,7 +396,7 @@ describe("OracleVectorStore", () => {
 
     results.forEach((doc) => {
       expect(
-        doc.metadata.price <= 20 || doc.metadata.category === "books"
+        doc.metadata.price <= 20 || doc.metadata.category === "books",
       ).toBe(true);
     });
   });
@@ -461,36 +460,25 @@ describe("OracleVectorStore", () => {
 
     // Complex filter example with _or and nested _and/_or
     const results = await oraclevs.similaritySearch("test", 10, filter);
-    const expectedId = (id: string) => {
-      const buf = Buffer.from(
-        createHash("sha256")
-          .update(id)
-          .digest("hex")
-          .substring(0, 16)
-          .toUpperCase(),
-        "hex"
-      );
-      return buf.toString("hex");
-    };
     expect(results).toHaveLength(3);
     expect(results).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           pageContent: "A thrilling mystery novel",
           metadata: { category: "books", price: 15, rating: 4.5 },
-          id: expectedId("1"),
+          id: "1",
         }),
         expect.objectContaining({
           pageContent: "Budget wired earphones",
           metadata: { category: "electronics", price: 15, rating: 3.9 },
-          id: expectedId("5"),
+          id: "5",
         }),
         expect.objectContaining({
           pageContent: "Affordable cooking guide",
           metadata: { category: "books", price: 18, rating: 4.2 },
-          id: expectedId("3"),
+          id: "3",
         }),
-      ])
+      ]),
     );
   });
 
@@ -526,7 +514,7 @@ describe("OracleVectorStore", () => {
       "best beaches in Europe",
       {
         k: 3,
-      }
+      },
     );
 
     // Extract only page contents for checking

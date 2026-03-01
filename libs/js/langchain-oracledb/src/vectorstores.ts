@@ -525,7 +525,7 @@ export class OracleVS extends VectorStore {
         binds.push({
           ext_id: externalId,
           text: doc.pageContent,
-          metadata: JSON.stringify(doc.metadata), // Ensure JSON is stringified for DB_TYPE_JSON
+          metadata: doc.metadata, // Ensure JSON is stringified for DB_TYPE_JSON
           embedding: new Float32Array(vectors[index]),
         });
       }
@@ -612,7 +612,7 @@ export class OracleVS extends VectorStore {
       const bindValues: any = [convertedEmbedding];
 
       let sqlQuery = `
-      SELECT id, 
+      SELECT external_id,
         text,
         metadata,
         vector_distance(embedding, :1, ${this.distanceStrategy}) as distance,
@@ -644,7 +644,7 @@ export class OracleVS extends VectorStore {
           const document = new Document({
             pageContent: text || "",
             metadata: metadata || {},
-            id: (row[0] as Buffer).toString("hex"),
+            id: row[0] as string,
           });
           docsScoresAndEmbeddings.push([document, distance, embedding]);
         }
