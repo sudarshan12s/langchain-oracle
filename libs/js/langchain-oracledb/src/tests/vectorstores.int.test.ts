@@ -173,6 +173,27 @@ describe("OracleVectorStore", () => {
         | undefined;
       expect(initialMetadata?.version).toBe(1);
 
+      await expect(
+        oraclevs.addDocuments(
+          [
+            new Document({
+              pageContent: "Updated content",
+              metadata: { version: 2, updated: true },
+            }),
+          ],
+          { ids: [docId] },
+        ),
+      ).rejects.toThrow(/ORA-00001|unique constraint/i);
+
+      const rowAfterFailedInsert = await getRow();
+      expect(rowAfterFailedInsert?.TEXT ?? rowAfterFailedInsert?.text).toBe(
+        "Original content",
+      );
+      const metadataAfterFailedInsert = (
+        rowAfterFailedInsert?.METADATA ?? rowAfterFailedInsert?.metadata
+      ) as Metadata | undefined;
+      expect(metadataAfterFailedInsert?.version).toBe(1);
+
       await oraclevs.addDocuments(
         [
           new Document({
