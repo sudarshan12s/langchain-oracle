@@ -119,6 +119,86 @@ describe("OracleVectorStore", () => {
     expect(results2).toHaveLength(1);
   });
 
+  test("Test vectorstore addDocuments upsert", async () => {
+    let connection: oracledb.Connection | undefined;
+
+    try {
+      connection = await pool.getConnection();
+      const oraclevs = new OracleVS(embedder, dbConfig);
+      await oraclevs.initialize();
+
+      const docId = "doc-upsert-1";
+      const getRow = async () => {
+        if (!connection) {
+          throw new Error("Connection not available");
+        }
+        const result = await connection.execute(
+          `SELECT external_id, text, metadata FROM "${tableName}" WHERE external_id = :id`,
+          [docId],
+          {
+            outFormat: oracledb.OUT_FORMAT_OBJECT,
+            fetchInfo: {
+              TEXT: { type: oracledb.STRING },
+            },
+          },
+        );
+        return (result.rows?.[0] ?? null) as {
+          EXTERNAL_ID?: string;
+          external_id?: string;
+          TEXT?: string;
+          text?: string;
+          METADATA?: Metadata;
+          metadata?: Metadata;
+        } | null;
+      };
+
+      await oraclevs.addDocuments(
+        [
+          new Document({
+            pageContent: "Original content",
+            metadata: { version: 1 },
+          }),
+        ],
+        { ids: [docId] },
+      );
+
+      const initialRow = await getRow();
+      expect(initialRow).toBeTruthy();
+      const initialId = initialRow?.EXTERNAL_ID ?? initialRow?.external_id;
+      expect(initialId).toBe(docId);
+      const initialText = initialRow?.TEXT ?? initialRow?.text;
+      expect(initialText).toBe("Original content");
+      const initialMetadata = (initialRow?.METADATA ?? initialRow?.metadata) as
+        | Metadata
+        | undefined;
+      expect(initialMetadata?.version).toBe(1);
+
+      await oraclevs.addDocuments(
+        [
+          new Document({
+            pageContent: "Updated content",
+            metadata: { version: 2, updated: true },
+          }),
+        ],
+        { ids: [docId], upsert: true },
+      );
+
+      const updatedRow = await getRow();
+      expect(updatedRow).toBeTruthy();
+      const updatedId = updatedRow?.EXTERNAL_ID ?? updatedRow?.external_id;
+      expect(updatedId).toBe(docId);
+      const updatedText = updatedRow?.TEXT ?? updatedRow?.text;
+      expect(updatedText).toBe("Updated content");
+      const updatedMetadata = (updatedRow?.METADATA ?? updatedRow?.metadata) as
+        | Metadata
+        | undefined;
+      expect(updatedMetadata?.version).toBe(2);
+      expect(updatedMetadata?.updated).toBe(true);
+    } finally {
+      await connection?.close();
+    }
+  });
+
   test("Test vectorstore addDocuments and find using filter IN and NIN Clause", async () => {
     oraclevs = new OracleVS(embedder, dbConfig);
     await oraclevs.initialize();
