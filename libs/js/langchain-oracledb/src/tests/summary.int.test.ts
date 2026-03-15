@@ -2,6 +2,9 @@
 import { test, expect } from "vitest";
 import oracledb from "oracledb";
 import { OracleSummary } from "../index.js";
+import { tool } from "@langchain/core/tools";
+import { RunnableSequence } from "@langchain/core/runnables";
+import { z } from "zod";
 
 test("Test summary with database", async () => {
   const text =
@@ -13,11 +16,35 @@ test("Test summary with database", async () => {
     password: process.env.ORACLE_PASSWORD,
     connectString: process.env.ORACLE_DSN,
   });
-  const model = new OracleSummary(connection, pref);
-  const output = await model.getSummary(text);
-  await connection.close();
 
-  expect(output.length).toBeGreaterThan(1);
+  try {
+    const model = new OracleSummary(connection, pref);
+    const directSummary = await model.getSummary(text);
+    expect(directSummary.length).toBeGreaterThan(1);
+
+    const summarizeTool = tool(
+      async ({ text }: { text: string }) => model.getSummary(text),
+      {
+        name: "oracle_summary",
+        description: "Summarize Oracle-sourced documents.",
+        schema: z.object({
+          text: z.string().describe("Full text to summarize"),
+        }),
+      },
+    );
+
+    const toolSummary = await summarizeTool.invoke({ text });
+    expect(toolSummary).toBe(directSummary);
+
+    const summarizeChain = RunnableSequence.from([
+      (input: string) => ({ text: input }),
+      summarizeTool,
+    ]);
+    const chainSummary = await summarizeChain.invoke(text);
+    expect(chainSummary).toBe(directSummary);
+  } finally {
+    await connection.close();
+  }
 });
 
 test("Test summary with third-party", async () => {
@@ -38,9 +65,12 @@ test("Test summary with third-party", async () => {
     password: process.env.ORACLE_PASSWORD,
     connectString: process.env.ORACLE_DSN,
   });
-  const model = new OracleSummary(connection, pref);
-  const output = await model.getSummary(text);
-  await connection.close();
 
-  expect(output.length).toBeGreaterThan(1);
+  try {
+    const model = new OracleSummary(connection, pref);
+    const output = await model.getSummary(text);
+    expect(output.length).toBeGreaterThan(1);
+  } finally {
+    await connection.close();
+  }
 });

@@ -220,6 +220,69 @@ describe("OracleVectorStore", () => {
     }
   });
 
+  test("initialize applies table description and column annotations", async () => {
+    const annotatedTable = `${tableName}_meta`;
+    const annotatedConfig: OracleDBVSArgs = {
+      ...dbConfig,
+      tableName: annotatedTable,
+      description: "Integration test table description",
+      annotations: {
+        external_id: "External identifier for documents",
+        metadata: "JSON metadata payload",
+      },
+    };
+
+    await dropTablePurge(connection as oracledb.Connection, annotatedTable);
+
+    const annotatedStore = new OracleVS(embedder, annotatedConfig);
+    await annotatedStore.initialize();
+
+    let metaConnection: oracledb.Connection | undefined;
+    try {
+      metaConnection = await pool.getConnection();
+
+      const tableCommentResult = await metaConnection.execute(
+        `SELECT comments FROM user_tab_comments WHERE table_name = :tableName`,
+        [annotatedTable],
+        { outFormat: oracledb.OUT_FORMAT_OBJECT },
+      );
+      const tableCommentRow = tableCommentResult.rows?.[0] as
+        | { COMMENTS?: string; comments?: string }
+        | undefined;
+      const tableComment =
+        tableCommentRow?.COMMENTS ?? tableCommentRow?.comments ?? null;
+      expect(tableComment).toBe("Integration test table description");
+
+      const fetchColumnComment = async (
+        columnName: string,
+      ): Promise<string | null> => {
+        const columnResult = await metaConnection!.execute(
+          `SELECT comments FROM user_col_comments WHERE table_name = :tableName AND column_name = :columnName`,
+          [annotatedTable, columnName],
+          { outFormat: oracledb.OUT_FORMAT_OBJECT },
+        );
+        const columnRow = columnResult.rows?.[0] as
+          | { COMMENTS?: string; comments?: string }
+          | undefined;
+        return columnRow?.COMMENTS ?? columnRow?.comments ?? null;
+      };
+
+      const externalIdComment = await fetchColumnComment("EXTERNAL_ID");
+      expect(externalIdComment).toBe("External identifier for documents");
+
+      const metadataComment = await fetchColumnComment("METADATA");
+      expect(metadataComment).toBe("JSON metadata payload");
+    } finally {
+      if (metaConnection) {
+        await metaConnection.close();
+      }
+      await dropTablePurge(
+        connection as oracledb.Connection,
+        annotatedTable,
+      );
+    }
+  });
+
   test("Test vectorstore addDocuments and find using filter IN and NIN Clause", async () => {
     oraclevs = new OracleVS(embedder, dbConfig);
     await oraclevs.initialize();

@@ -137,6 +137,9 @@ export interface OracleDBVSArgs {
   query: string; // compulsory?
   distanceStrategy?: DistanceStrategy;
   filter?: Metadata;
+  description?: string;
+  annotations?: Record<string, string>;
+  vectorType?: string;
 }
 
 export const DistanceStrategy = {
@@ -203,15 +206,37 @@ function quoteIdentifier(identifier: string) {
   return quotedParts.join(".");
 }
 
+type TableCustomization = {
+  vectorType?: string;
+  description?: string;
+  annotations?: Record<string, string>;
+};
+
+function normalizeVectorType(vectorType?: string): string {
+  if (!vectorType) return "FLOAT32";
+  const normalized = vectorType.trim().toUpperCase();
+  if (!/^[A-Z0-9_]+$/.test(normalized)) {
+    throw new Error(`Vector type ${vectorType} is not valid.`);
+  }
+  return normalized;
+}
+
+function escapeCommentText(comment: string): string {
+  return comment.replace(/'/g, "''");
+}
+
 export async function createTable(
   connection: oracledb.Connection,
   tableName: string,
   embeddingDim: number,
+  customization?: TableCustomization,
 ): Promise<void> {
+  const tableIdentifier = quoteIdentifier(tableName);
+  const vectorType = normalizeVectorType(customization?.vectorType);
   const colsDict = {
     id: "RAW(16) DEFAULT SYS_GUID() PRIMARY KEY",
     external_id: `VARCHAR2(36) UNIQUE`,
-    embedding: `vector(${embeddingDim}, FLOAT32)`,
+    embedding: `vector(${embeddingDim}, ${vectorType})`,
     text: "CLOB",
     metadata: "JSON",
   };
@@ -220,11 +245,35 @@ export async function createTable(
     const ddlBody = Object.entries(colsDict)
       .map(([colName, colType]) => `${colName} ${colType}`)
       .join(", ");
-    const ddl = `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)}
+    const ddl = `CREATE TABLE IF NOT EXISTS ${tableIdentifier}
                    (
                        ${ddlBody}
                    )`;
     await connection.execute(ddl);
+
+    const tableDescription = customization?.description?.trim();
+    if (tableDescription) {
+      const escapedDescription = escapeCommentText(tableDescription);
+      const tableCommentSql = `COMMENT ON TABLE ${tableIdentifier} IS '${escapedDescription}'`;
+      await connection.execute(tableCommentSql);
+    }
+
+    if (customization?.annotations) {
+      for (const [columnName, note] of Object.entries(
+        customization.annotations,
+      )) {
+        const trimmedNote = note?.trim();
+        if (!trimmedNote) continue;
+        const columnKey = columnName.trim().toLowerCase();
+        if (!(columnKey in colsDict)) continue;
+        const normalizedColumnIdentifier = `${tableIdentifier}.${quoteIdentifier(
+          columnKey.toUpperCase(),
+        )}`;
+        const escapedNote = escapeCommentText(trimmedNote);
+        const columnCommentSql = `COMMENT ON COLUMN ${normalizedColumnIdentifier} IS '${escapedNote}'`;
+        await connection.execute(columnCommentSql);
+      }
+    }
   } catch (error: unknown) {
     handleError(error);
   }
@@ -420,6 +469,12 @@ export class OracleVS extends VectorStore {
 
   filter?: Metadata;
 
+  readonly description?: string;
+
+  readonly annotations?: Record<string, string>;
+
+  readonly vectorType?: string;
+
   readonly query: string;
 
   _vectorstoreType(): string {
@@ -436,6 +491,11 @@ export class OracleVS extends VectorStore {
         dbConfig.distanceStrategy ?? this.distanceStrategy;
       this.query = dbConfig.query;
       this.filter = dbConfig.filter;
+      this.description = dbConfig.description;
+      this.annotations = dbConfig.annotations
+        ? { ...dbConfig.annotations }
+        : undefined;
+      this.vectorType = dbConfig.vectorType;
     } catch (error: unknown) {
       handleError(error);
     }
@@ -451,7 +511,11 @@ export class OracleVS extends VectorStore {
     try {
       this.embeddingDimension = await this.getEmbeddingDimension(this.query);
       connection = await this.getConnection();
-      await createTable(connection, this.tableName, this.embeddingDimension);
+      await createTable(connection, this.tableName, this.embeddingDimension, {
+        description: this.description,
+        annotations: this.annotations,
+        vectorType: this.vectorType,
+      });
     } catch (error: unknown) {
       handleError(error);
     } finally {
