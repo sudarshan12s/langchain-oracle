@@ -5,6 +5,7 @@
 
 import json
 import uuid
+import warnings
 from typing import (
     Any,
     Callable,
@@ -75,6 +76,10 @@ class CohereProvider(Provider):
         self.oci_image_content_v2 = None
         self.oci_image_url_v2 = None
         self.chat_api_format_v2 = None
+
+    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize parameters. Returns params unchanged for Cohere."""
+        return params
 
     def _load_v2_classes(self) -> None:
         """Lazy load Cohere V2 API classes for vision support.
@@ -149,11 +154,12 @@ class CohereProvider(Provider):
     def chat_response_to_text(self, response: Any) -> str:
         """Extract text from a Cohere chat response (V1 or V2)."""
         chat_resp = response.data.chat_response
+        text = ""
         # V1 API: CohereChatResponse has .text attribute
         if hasattr(chat_resp, "text"):
-            return chat_resp.text or ""
+            text = chat_resp.text or ""
         # V2 API: CohereChatResponseV2 has .message.content (list of content blocks)
-        if hasattr(chat_resp, "message") and chat_resp.message:
+        elif hasattr(chat_resp, "message") and chat_resp.message:
             content = chat_resp.message.content
             if content:
                 # Extract text from all TEXT type content blocks
@@ -162,8 +168,46 @@ class CohereProvider(Provider):
                     for block in content
                     if hasattr(block, "type") and block.type == "TEXT" and block.text
                 ]
-                return "".join(texts)
-        return ""
+                text = "".join(texts)
+        if text == "":
+            warnings.warn(
+                "CohereProvider could not extract text and returned an empty "
+                "string. Ensure the selected provider matches the response "
+                "payload format, otherwise content extraction will return an "
+                "empty string.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return text
+
+    def chat_response_to_text_from_dict(self, response_data: Dict[str, Any]) -> str:
+        """Extract text from Cohere chat response dict (async path, V1 or V2)."""
+        chat_response = response_data.get("chatResponse", {})
+        text = ""
+        # V1 API: text at top level
+        if "text" in chat_response:
+            text = chat_response.get("text", "")
+        # V2 API: text in message.content[].text
+        else:
+            message = chat_response.get("message", {})
+            content = message.get("content", [])
+            if isinstance(content, list):
+                texts = [
+                    c.get("text", "")
+                    for c in content
+                    if isinstance(c, dict) and c.get("type") == "TEXT"
+                ]
+                text = "".join(texts)
+        if text == "":
+            warnings.warn(
+                "CohereProvider could not extract text and returned an empty "
+                "string. Ensure the selected provider matches the response "
+                "payload format, otherwise content extraction will return an "
+                "empty string.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return text
 
     def chat_stream_to_text(self, event_data: Dict) -> str:
         """Extract text from a Cohere chat stream event (V1 or V2)."""
