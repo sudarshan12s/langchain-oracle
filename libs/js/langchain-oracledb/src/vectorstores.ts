@@ -602,7 +602,8 @@ export class OracleVS extends VectorStore {
       const bindValues: any = [convertedEmbedding];
 
       let sqlQuery = `
-      SELECT id, 
+      SELECT /*+ VECTOR_INDEX_TRANSFORM(${this.tableName}) */
+        id,
         text,
         metadata,
         vector_distance(embedding, :1, ${this.distanceStrategy}) as distance,
