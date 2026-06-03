@@ -45,7 +45,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from langchain_core.runnables import Runnable, RunnableMap, RunnablePassthrough
 from langchain_core.tools import BaseTool
 from langchain_openai import ChatOpenAI
-from openai import DefaultHttpxClient
+from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
 from pydantic import BaseModel, ConfigDict, SecretStr, model_validator
 
 from langchain_oci.chat_models.async_mixin import ChatOCIGenAIAsyncMixin
@@ -54,6 +54,7 @@ from langchain_oci.chat_models.providers import (
     GeminiProvider,
     GenericProvider,
     MetaProvider,
+    OpenAIProvider,
     Provider,
 )
 from langchain_oci.common.utils import CUSTOM_ENDPOINT_PREFIX, OCIUtils
@@ -174,7 +175,7 @@ class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
             "cohere": CohereProvider(),
             "google": GeminiProvider(),
             "meta": MetaProvider(),
-            "openai": GenericProvider(),
+            "openai": OpenAIProvider(),
             "generic": GenericProvider(),
         }
 
@@ -225,22 +226,8 @@ class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
         chat_params = {**_model_kwargs, **kwargs, **oci_params}
 
         # Apply provider-specific parameter transformations
+        # (e.g. OpenAIProvider maps max_tokens -> max_completion_tokens here)
         chat_params = self._provider.normalize_params(chat_params)
-
-        # Warn if using max_tokens with OpenAI models
-        if (
-            self.model_id
-            and self.model_id.startswith("openai.")
-            and "max_tokens" in chat_params
-        ):
-            import warnings
-
-            warnings.warn(
-                "OpenAI models require 'max_completion_tokens' "
-                "instead of 'max_tokens'.",
-                UserWarning,
-                stacklevel=2,
-            )
 
         if not self.model_id:
             raise ValueError("Model ID is required for chat.")
@@ -393,7 +380,14 @@ class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
         if method == "function_calling":
             if schema is None:
                 raise ValueError("Schema must be provided for function_calling method.")
-            llm = self.bind_tools([schema], **kwargs)
+            # Force tool use when the provider supports tool_choice, so the
+            # model returns structured output instead of free-form text.
+            # Respect an explicit caller-supplied tool_choice to allow opting
+            # out when a specific provider/model handles "required" poorly.
+            bind_kwargs: Dict[str, Any] = {**kwargs}
+            if self._provider.supports_tool_choice and "tool_choice" not in bind_kwargs:
+                bind_kwargs["tool_choice"] = "required"
+            llm = self.bind_tools([schema], **bind_kwargs)
             tool_name = getattr(self._provider.convert_to_oci_tool(schema), "name")
             if is_pydantic_schema:
                 output_parser: OutputParserLike = PydanticToolsParser(
@@ -553,6 +547,13 @@ class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
         response = self.client.chat(request)
         tool_call_ids: Dict[int, str] = {}
 
+        # Reset any per-stream provider state (currently the GenericProvider's
+        # incremental <tool_call> XML buffer used for Hermes/Llama-style DAC
+        # fine-tunes). Older providers don't define this hook.
+        reset = getattr(self._provider, "reset_stream_state", None)
+        if reset is not None:
+            reset()
+
         for event in response.data.events():
             event_data = json.loads(event.data)
 
@@ -573,6 +574,14 @@ class ChatOCIGenAI(ChatOCIGenAIAsyncMixin, BaseChatModel, OCIGenAIBase):
                     run_manager.on_llm_new_token(delta, chunk=chunk)
                 yield chunk
             else:
+                # Flush any text the provider was holding back waiting on a
+                # potential <tool_call> opener; emit it as a final delta so
+                # callers don't lose trailing characters.
+                flush = getattr(self._provider, "flush_stream_state", None)
+                tail = flush() if flush is not None else ""
+                if tail:
+                    yield ChatGenerationChunk(message=AIMessageChunk(content=tail))
+
                 generation_info = self._provider.chat_stream_generation_info(event_data)
                 yield ChatGenerationChunk(
                     message=AIMessageChunk(
@@ -729,16 +738,26 @@ class ChatOCIOpenAI(ChatOpenAI):
                 "Please install: pip install oci-openai"
             ) from e
 
+        http_client = kwargs.pop("http_client", None)
+        http_async_client = kwargs.pop("http_async_client", None)
+        default_headers = _build_headers(
+            compartment_id=compartment_id,
+            conversation_store_id=conversation_store_id,
+            **kwargs,
+        )
+
         super().__init__(
             model=model,
             api_key=SecretStr(API_KEY),
-            http_client=DefaultHttpxClient(
+            http_client=http_client
+            or DefaultHttpxClient(
                 auth=auth,
-                headers=_build_headers(
-                    compartment_id=compartment_id,
-                    conversation_store_id=conversation_store_id,
-                    **kwargs,
-                ),
+                headers=default_headers,
+            ),
+            http_async_client=http_async_client
+            or DefaultAsyncHttpxClient(
+                auth=auth,
+                headers=default_headers,
             ),
             base_url=_resolve_base_url(
                 region=region, service_endpoint=service_endpoint, base_url=base_url
