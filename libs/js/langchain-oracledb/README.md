@@ -11,7 +11,7 @@ This package contains the LangChain.js integrations for Oracle Database.
 ## Installation
 
 ```bash npm2yarn
-npm install @oracle/langchain-oracledb @langchain/core
+npm install @oracle/langchain-oracledb @langchain/core @langchain/textsplitters oracledb
 ```
 
 This package, along with the main LangChain package, depends on [`@langchain/core`](https://npmjs.com/package/@langchain/core/).
