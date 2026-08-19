@@ -8,6 +8,8 @@ import {
   MaxAttemptsTerminationStrategy,
   Region,
   ResourcePrincipalAuthenticationDetailsProvider,
+  DefaultRequestSigner,
+  type RequestSigner,
 } from "oci-common";
 
 import { GenerativeAiInferenceClient } from "oci-generativeaiinference";
@@ -41,6 +43,16 @@ export class OciGenAiSdkClient {
   ): Promise<OciGenAiSdkClient> {
     const client: GenerativeAiInferenceClient = await this._getClient(params);
     return new OciGenAiSdkClient(client);
+  }
+
+  /**
+   * Creates an OCI IAM request signer for an OpenAI-compatible OCI endpoint.
+   * Native SDK clients and direct REST transports share the same auth options.
+   */
+  static async createRequestSigner(
+    params: OciGenAiClientParams
+  ): Promise<RequestSigner> {
+    return new DefaultRequestSigner(await this._getAuthProvider(params));
   }
 
   static async _getClient(
@@ -99,6 +111,20 @@ export class OciGenAiSdkClient {
   static async _getAuthProvider(
     params: OciGenAiClientParams
   ): Promise<AuthenticationDetailsProvider> {
+    if (params.newClientParams?.authType === OciGenAiNewClientAuthType.Other) {
+      const provider = (
+        params.newClientParams.authParams as
+          | { authenticationDetailsProvider?: AuthenticationDetailsProvider }
+          | undefined
+      )?.authenticationDetailsProvider;
+      if (provider) {
+        return provider;
+      }
+      throw new Error(
+        "Custom authentication requires an authenticationDetailsProvider"
+      );
+    }
+
     switch (params.newClientParams?.authType) {
       case undefined:
       case OciGenAiNewClientAuthType.ConfigFile:

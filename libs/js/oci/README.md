@@ -18,6 +18,11 @@ metadata, LangChain tool binding, and tool-message turns. This enables the
 standard LangChain structured-output flow for OCI Generic models. Cohere support
 uses OCI's legacy V1 API format; its tool-result round trip is not supported.
 
+`OciGenAiResponsesChat` targets OCI's separate OpenAI-compatible Responses API.
+Use it for Responses-only and agentic models such as
+`xai.grok-4.20-multi-agent-0309`; those models must not be sent to the native
+OCI SDK chat endpoint used by `OciGenAiGenericChat`.
+
 ## Prerequisites
 
 In order to use this integration you will need the following:
@@ -114,6 +119,16 @@ export OCI_CONFIG_PROFILE='DEFAULT'
 pnpm test:int
 ```
 
+Responses API integration testing additionally requires a Generative AI project
+OCID. The test is skipped unless this variable is set:
+
+```bash
+export OCI_GENAI_RESPONSES_INTEGRATION_TESTS_PROJECT_ID='<project-ocid>'
+export OCI_GENAI_RESPONSES_INTEGRATION_TESTS_MODEL='xai.grok-4.20-multi-agent-0309'
+export OCI_REGION='us-chicago-1'
+pnpm vitest run --mode int src/tests/responses_chat.int.test.ts
+```
+
 To run the real Generic LangGraph tool-round-trip test in Phoenix with xAI Grok,
 set the compartment ID (and optionally override the model or endpoint), then run
 the focused command:
@@ -176,6 +191,40 @@ const genericLlm = new OciGenAiGenericChat({
   // dedicatedEndpointId: "oci.dedicatedendpoint..."
 });
 ```
+
+## OCI Responses API
+
+OCI's OpenAI-compatible Responses API is distinct from the native OCI SDK chat
+API. It requires a Generative AI project and uses the `/openai/v1/responses`
+endpoint. `OciGenAiResponsesChat` signs requests with the same configuration,
+instance-principal, resource-principal, session, or custom OCI authentication
+settings as the native integration.
+
+```ts
+import {
+  OciGenAiNewClientAuthType,
+  OciGenAiResponsesChat,
+} from "@oracle/langchain-oci";
+
+const responsesLlm = new OciGenAiResponsesChat({
+  model: "xai.grok-4.20-multi-agent-0309",
+  projectId: "ocid1.generativeaiproject...",
+  endpoint:
+    "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com",
+  newClientParams: {
+    authType: OciGenAiNewClientAuthType.ConfigFile,
+    regionId: "us-chicago-1",
+  },
+});
+
+const response = await responsesLlm.invoke("Say hello");
+console.log(response.content);
+```
+
+Pass `conversationId` at invocation time to use OCI Conversations API state.
+The model maps `projectId` to the `OpenAI-Project` request header. A legacy
+`conversationStoreId` header option is available only for older OCI deployments;
+new applications should use `projectId` and `conversationId`.
 
 ## SDK client options
 

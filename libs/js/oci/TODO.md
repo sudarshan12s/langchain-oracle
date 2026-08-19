@@ -45,3 +45,7 @@ follow-up scope rather than a prerequisite for the initial release.
 - [x] Run the package unit tests, lint, format check, and build in CI.
 - [x] Add text-only `OciGenAiEmbeddings` with on-demand and dedicated serving,
   batching, unit coverage, and opt-in authenticated integration coverage.
+- [x] Add `OciGenAiResponsesChat` for OCI OpenAI-compatible Responses API
+  models, including OCI IAM request signing, project header support, streaming,
+  tool-call/result mapping, unit coverage, and an opt-in project-based
+  integration test.
