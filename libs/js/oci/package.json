@@ -37,8 +37,8 @@
   "author": "Oracle",
   "license": "MIT",
   "dependencies": {
-    "oci-common": "^2.107.2",
-    "oci-generativeaiinference": "^2.107.2"
+    "oci-common": "^2.139.1",
+    "oci-generativeaiinference": "^2.139.1"
   },
   "peerDependencies": {
     "@langchain/core": "^1.0.0"
