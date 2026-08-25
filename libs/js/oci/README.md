@@ -341,7 +341,9 @@ const modelWithRequiredTool = model.bindTools(tools, {
 });
 ```
 
-Supported tool-choice forms include `auto`, `none`, `required`, `any`, boolean values, and a named function choice.
+Supported tool-choice forms include `auto`, `none`, `required`, `any`, boolean
+values (`true` means required; `false` means none), a tool-name string, and an
+OpenAI-style named-function choice.
 
 Tool-call results can be supplied in subsequent LangChain turns using `ToolMessage`. The tool-call ID returned by OCI is used to correlate the tool result with the original model-generated call.
 
@@ -372,6 +374,10 @@ console.log(result);
 ```
 
 Use structured output when the application needs model responses that conform to a defined schema rather than free-form text.
+
+`OciGenAiGenericChat` currently implements structured output through function
+calling. LangChain `jsonMode` and `strict` structured-output options are not
+implemented by this adapter.
 
 ## Embeddings
 

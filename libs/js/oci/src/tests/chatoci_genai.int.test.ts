@@ -9,7 +9,9 @@ import {
   GenerativeAiClient,
   models as generativeAiModels,
 } from "oci-generativeai";
+import { GenerativeAiInferenceClient } from "oci-generativeaiinference";
 import { expect, test } from "vitest";
+import { z } from "zod";
 
 import { AIMessageChunk } from "@langchain/core/messages";
 import { OciGenAiCohereChat } from "../cohere_chat.js";
@@ -127,6 +129,157 @@ test("OCI GenAI chat stream", async () => {
     console.log(`Chunks generated: ${numChunks}`);
   });
 });
+
+test.skipIf(!selectedFamilies.has("generic") || !compartmentId)(
+  "OCI GenAI Generic chat accepts invocation request parameters",
+  async () => {
+    await testGenericChatWithModelFallback(
+      OciGenAiGenericChat,
+      {
+        compartmentId,
+        onDemandModelId:
+          process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+      },
+      async (chatClass) => {
+        const genericChat = chatClass as OciGenAiGenericChat;
+        const response = await genericChat.invoke(
+          "Tell me a joke about beagles.",
+          {
+            requestParams: {
+              temperature: 1,
+              maxTokens: 300,
+            },
+          }
+        );
+
+        expect(response.content.length).toBeGreaterThan(0);
+        expect(response.response_metadata).toBeDefined();
+      }
+    );
+  }
+);
+
+test.skipIf(!selectedFamilies.has("generic") || !compartmentId)(
+  "OCI GenAI Generic chat supports structured output",
+  async () => {
+    await testGenericChatWithModelFallback(
+      OciGenAiGenericChat,
+      {
+        compartmentId,
+        onDemandModelId:
+          process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+      },
+      async (chatClass) => {
+        const structuredModel = (
+          chatClass as OciGenAiGenericChat
+        ).withStructuredOutput(
+          z.object({
+            name: z.string(),
+            description: z.string(),
+          })
+        );
+        const result = await structuredModel.invoke(
+          "Use the provided extraction tool to describe OCI Generative AI."
+        );
+
+        expect(result.name).toBeTypeOf("string");
+        expect(result.description).toBeTypeOf("string");
+      }
+    );
+  }
+);
+
+// Minimal Generic-chat example. In particular, no
+// `newClientParams` are supplied, so the OCI SDK resolves API-key credentials
+// from ~/.oci/config using its DEFAULT profile.
+test.skipIf(
+  !selectedFamilies.has("generic") ||
+    !compartmentId ||
+    !process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID
+)(
+  "OCI GenAI Generic chat uses the SDK default config-file credentials",
+  async () => {
+    const chatClass = new OciGenAiGenericChat({
+      compartmentId,
+      onDemandModelId:
+        process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+    });
+
+    try {
+      const response = await chatClass.invoke("Reply with one short greeting.");
+      expect(response.content.length).toBeGreaterThan(0);
+    } finally {
+      await chatClass.close();
+    }
+  }
+);
+
+// Non-default config-file example. Deliberately do
+// not supply regionId or serviceEndpoint: the SDK must obtain the region from
+// the selected OCI profile as well as use that profile's credentials.
+test.skipIf(
+  !selectedFamilies.has("generic") ||
+    !compartmentId ||
+    !configFilePath ||
+    !configProfile ||
+    !process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID
+)("OCI GenAI Generic chat uses an explicit config-file profile", async () => {
+  if (!configFilePath || !configProfile) {
+    throw new Error(
+      "OCI_CONFIG_FILE and OCI_CONFIG_PROFILE are required for this test"
+    );
+  }
+
+  const chatClass = new OciGenAiGenericChat({
+    compartmentId,
+    onDemandModelId:
+      process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+    newClientParams: {
+      authType: OciGenAiNewClientAuthType.ConfigFile,
+      authParams: {
+        clientConfigFilePath: configFilePath,
+        clientProfile: configProfile,
+      },
+    },
+  });
+
+  try {
+    const response = await chatClass.invoke("Reply with one short greeting.");
+    expect(response.content.length).toBeGreaterThan(0);
+  } finally {
+    await chatClass.close();
+  }
+});
+
+// The application owns an
+// SDK client built from the default config provider, and closes it itself.
+test.skipIf(
+  !selectedFamilies.has("generic") ||
+    !compartmentId ||
+    !process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID
+)(
+  "OCI GenAI Generic chat accepts an injected config-file SDK client",
+  async () => {
+    const client = new GenerativeAiInferenceClient({
+      authenticationDetailsProvider:
+        new ConfigFileAuthenticationDetailsProvider(),
+    });
+    const chatClass = new OciGenAiGenericChat({
+      compartmentId,
+      onDemandModelId:
+        process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+      client,
+    });
+
+    try {
+      const response = await chatClass.invoke("Reply with one short greeting.");
+      expect(response.content.length).toBeGreaterThan(0);
+    } finally {
+      await chatClass.close();
+      client.close();
+    }
+  }
+);
 
 /*
  * Utils

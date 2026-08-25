@@ -143,6 +143,26 @@ test("OciGenAiEmbeddings embeds one query and supports dedicated serving", async
   });
 });
 
+test("OciGenAiEmbeddings sends SEARCH_QUERY for query embeddings", async () => {
+  const client = createClient([[0.1, 0.2, 0.3]]);
+  const embeddings = new OciGenAiEmbeddings({
+    client,
+    compartmentId: "ocid1.compartment.oc1..example",
+    onDemandModelId: "cohere.embed-v4.0",
+    inputType: models.EmbedTextDetails.InputType.SearchQuery,
+  });
+
+  await expect(
+    embeddings.embedQuery("What does OCI provide?")
+  ).resolves.toEqual([0.1, 0.2, 0.3]);
+  expect(client.embedText).toHaveBeenCalledWith({
+    embedTextDetails: expect.objectContaining({
+      inputs: ["What does OCI provide?"],
+      inputType: "SEARCH_QUERY",
+    }),
+  });
+});
+
 test("OciGenAiEmbeddings does not call OCI for an empty document array", async () => {
   const client = createClient();
 
