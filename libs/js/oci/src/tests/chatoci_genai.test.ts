@@ -433,7 +433,9 @@ test("OCI GenAI Generic chat uses a caller-owned SDK client", async () => {
   } as any);
   const closeClient = vi.spyOn(client, "close");
   const chat = new OciGenAiGenericChat({
-    ...createParams,
+    compartmentId: "oci.compartment.ocid",
+    onDemandModelId: "oci.model.ocid",
+    maxRetries: 0,
     client,
   });
 

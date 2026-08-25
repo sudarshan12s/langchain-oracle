@@ -61,6 +61,8 @@ export type GenericCallOptions = Omit<
   "apiFormat" | "messages" | "isStream" | "stop"
 >;
 
+type OciGenAiNamedToolChoice = string & Record<never, never>;
+
 /** Standard LangChain tool-choice forms accepted by Generic chat bindings. */
 export type OciGenAiGenericToolChoice =
   | "auto"
@@ -69,7 +71,7 @@ export type OciGenAiGenericToolChoice =
   | "any"
   // Preserve autocomplete for the standard literals while allowing a bound
   // function name such as `tool_choice: "get_weather"`.
-  | (string & {})
+  | OciGenAiNamedToolChoice
   | boolean
   | { type: "function"; function: { name: string } };
 
@@ -82,32 +84,32 @@ type OciGenAiGenericBindToolsOptions = Partial<
 /** OCI Generic chat model, including LangChain tool-call and tool-result turns. */
 export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
   withStructuredOutput<
-    RunOutput extends Record<string, any> = Record<string, any>
+    RunOutput extends Record<string, unknown> = Record<string, unknown>
   >(
     outputSchema:
       | InteropZodType<RunOutput>
       | SerializableSchema<RunOutput>
-      | Record<string, any>,
+      | Record<string, unknown>,
     config?: StructuredOutputMethodOptions<false>
   ): Runnable<BaseLanguageModelInput, RunOutput>;
 
   withStructuredOutput<
-    RunOutput extends Record<string, any> = Record<string, any>
+    RunOutput extends Record<string, unknown> = Record<string, unknown>
   >(
     outputSchema:
       | InteropZodType<RunOutput>
       | SerializableSchema<RunOutput>
-      | Record<string, any>,
+      | Record<string, unknown>,
     config: StructuredOutputMethodOptions<true>
   ): Runnable<BaseLanguageModelInput, { raw: BaseMessage; parsed: RunOutput }>;
 
   override withStructuredOutput<
-    RunOutput extends Record<string, any> = Record<string, any>
+    RunOutput extends Record<string, unknown> = Record<string, unknown>
   >(
     outputSchema:
       | InteropZodType<RunOutput>
       | SerializableSchema<RunOutput>
-      | Record<string, any>,
+      | Record<string, unknown>,
     config?: StructuredOutputMethodOptions<boolean>
   ):
     | Runnable<BaseLanguageModelInput, RunOutput>
