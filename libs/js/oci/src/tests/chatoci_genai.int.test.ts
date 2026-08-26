@@ -189,6 +189,49 @@ test.skipIf(!selectedFamilies.has("generic") || !compartmentId)(
   }
 );
 
+test.skipIf(!selectedFamilies.has("generic") || !compartmentId)(
+  "OCI GenAI Generic chat supports structured output streaming",
+  async () => {
+    await testGenericChatWithModelFallback(
+      OciGenAiGenericChat,
+      {
+        compartmentId,
+        onDemandModelId:
+          process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+      },
+      async (chatClass) => {
+        const structuredModel = (
+          chatClass as OciGenAiGenericChat
+        ).withStructuredOutput(
+          z.object({
+            name: z.string(),
+            description: z.string(),
+          })
+        );
+
+        const stream = await structuredModel.stream(
+          "Use the provided extraction tool to describe OCI Generative AI."
+        );
+
+        const chunks = [];
+
+        for await (const chunk of stream) {
+          chunks.push(chunk);
+        }
+
+        expect(chunks.length).toBeGreaterThan(0);
+
+        const result = chunks[chunks.length - 1];
+
+        expect(result.name).toBeTypeOf("string");
+        expect(result.name.length).toBeGreaterThan(0);
+        expect(result.description).toBeTypeOf("string");
+        expect(result.description.length).toBeGreaterThan(0);
+      }
+    );
+  }
+);
+
 // Minimal Generic-chat example. In particular, no
 // `newClientParams` are supplied, so the OCI SDK resolves API-key credentials
 // from ~/.oci/config using its DEFAULT profile.

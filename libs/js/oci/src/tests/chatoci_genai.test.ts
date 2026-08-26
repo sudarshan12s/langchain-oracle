@@ -345,7 +345,7 @@ test("OciGenAiSdkClient create client based on some parameters #2", async () => 
   testSdkClient(sdkClient, Region.US_PHOENIX_1.regionId, 0);
 });
 
-test("OciGenAiSdkClient creates an Instance Principal client with README options", async () => {
+test("OciGenAiSdkClient creates an Instance Principal client", async () => {
   const build = vi
     .spyOn(
       InstancePrincipalsAuthenticationDetailsProviderBuilder.prototype,
@@ -376,7 +376,7 @@ test("OciGenAiSdkClient creates an Instance Principal client with README options
   }
 });
 
-test("OciGenAiSdkClient creates a Resource Principal client with README options", async () => {
+test("OciGenAiSdkClient creates a Resource Principal client", async () => {
   const builder = vi
     .spyOn(ResourcePrincipalAuthenticationDetailsProvider, "builder")
     .mockReturnValue(authenticationDetailsProvider as any);
@@ -1429,6 +1429,21 @@ test("OCI GenAI Generic validates Zod structured output", async () => {
     parsed: null,
     raw: { tool_calls: [{ id: "call-extract", name: "extract" }] },
   });
+});
+
+test("OCI GenAI Generic rejects unsupported structured-output methods", () => {
+  const chat = new OciGenAiGenericChat({
+    ...createParams,
+    client: { chat: async () => ({}) } as any,
+  });
+  const schema = z.object({ name: z.string() });
+
+  expect(() =>
+    chat.withStructuredOutput(schema, { method: "jsonMode" })
+  ).toThrow('"jsonMode" is not implemented by the OCI Generic chat adapter');
+  expect(() =>
+    chat.withStructuredOutput(schema, { method: "jsonSchema" })
+  ).toThrow('"jsonSchema" is not implemented by the OCI Generic chat adapter');
 });
 
 test("OCI GenAI Generic reconstructs streamed structured-output arguments", async () => {

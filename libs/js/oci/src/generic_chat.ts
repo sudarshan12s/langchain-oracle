@@ -122,9 +122,9 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
         '"strict" mode is not implemented by the OCI Generic chat adapter.'
       );
     }
-    if (config?.method === "jsonMode") {
+    if (config?.method !== undefined && config.method !== "functionCalling") {
       throw new Error(
-        '"jsonMode" is not implemented by the OCI Generic chat adapter; structured output currently uses function calling.'
+        `"${config.method}" is not implemented by the OCI Generic chat adapter; structured output currently uses function calling.`
       );
     }
 
@@ -582,6 +582,10 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
     OciGenAiModelCallOptions<GenericCallOptions>
   > {
     const { tool_choice: toolChoice, requestParams, ...callOptions } = kwargs;
+
+    // Convert once to OCI-native representations. Besides avoiding duplicate
+    // conversion below, this lets us validate a named tool choice against the
+    // exact set of functions that will be sent to OCI.
     const ociTools = OciGenAiGenericChat._convertTools(
       tools.map(convertToOpenAITool)
     );
@@ -590,9 +594,9 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
         ? undefined
         : OciGenAiGenericChat._convertToolChoice(toolChoice);
 
-    // A named choice must refer to a tool in this binding. Rejecting a typo
-    // here produces a useful LangChain-facing error instead of an OCI request
-    // containing incompatible `tools` and `toolChoice` fields.
+    // A function-specific tool choice must name one of the tools in this binding.
+    // Fail locally with a clear error instead of sending inconsistent `tools` and
+    // `toolChoice` values to OCI and relying on service-side validation.
     const functionName =
       ociToolChoice?.type === models.ToolChoiceFunction.type
         ? (ociToolChoice as models.ToolChoiceFunction).name
@@ -616,7 +620,9 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
         ...callOptions,
         requestParams: {
           ...(requestParams ?? {}),
+          // Explicit LangChain tool_choice takes precedence over the raw OCI option.
           ...(ociToolChoice !== undefined ? { toolChoice: ociToolChoice } : {}),
+          // bindTools owns the tool definitions sent with this binding.
           tools: ociTools,
         },
       },
