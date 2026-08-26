@@ -31,8 +31,8 @@
     "test:watch": "vitest",
     "test:int": "vitest run --mode int",
     "test:langgraph:int": "vitest run --mode int src/tests/langgraph_tool_roundtrip.int.test.ts",
-    "format": "prettier --config .prettierrc --write \"src\"",
-    "format:check": "prettier --config .prettierrc --check \"src\""
+    "format": "prettier --config .prettierrc --write \"src\" README.md",
+    "format:check": "prettier --config .prettierrc --check \"src\" README.md"
   },
   "author": "Oracle",
   "license": "MIT",

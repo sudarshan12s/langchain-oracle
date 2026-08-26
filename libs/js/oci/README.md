@@ -10,14 +10,13 @@ This package enables you to use OCI Generative AI in your LangChain.js applicati
 
 This package provides LangChain.js integrations for OCI Generative AI:
 
-* `OciGenAiGenericChat` for models using OCI's Generic chat API
-* `OciGenAiCohereChat` for legacy Cohere V1 chat models
-* `OciGenAiEmbeddings` for OCI Generative AI text embeddings
+- `OciGenAiGenericChat` for models using OCI's Generic chat API
+- `OciGenAiCohereChat` for legacy Cohere V1 chat models
+- `OciGenAiEmbeddings` for OCI Generative AI text embeddings
 
 `OciGenAiGenericChat` supports text chat, streaming, token usage and finish metadata, LangChain tool binding, and tool-message turns. This enables the standard LangChain structured-output flow for OCI Generic models.
 
-> [!NOTE]
-> `OciGenAiCohereChat` uses OCI's legacy Cohere V1 API format. Current Cohere chat models that require the V2 API are not supported by this class, and tool-result round trips are not supported for the legacy Cohere integration.
+> [!NOTE] > `OciGenAiCohereChat` uses OCI's legacy Cohere V1 API format. Current Cohere chat models that require the V2 API are not supported by this class, and tool-result round trips are not supported for the legacy Cohere integration.
 
 ## Prerequisites
 
@@ -132,11 +131,11 @@ The chat and embeddings integrations share the OCI SDK client lifecycle and supp
 
 `OciGenAiNewClientAuthType` supports:
 
-* Configuration-file authentication
-* Instance Principal
-* Resource Principal
-* Session authentication
-* A caller-provided OCI authentication provider
+- Configuration-file authentication
+- Instance Principal
+- Resource Principal
+- Session authentication
+- A caller-provided OCI authentication provider
 
 ### Configuration-file authentication
 
@@ -231,8 +230,7 @@ import { GenerativeAiInferenceClient } from "oci-generativeaiinference";
 import { OciGenAiGenericChat } from "@oracle/langchain-oci";
 
 const client = new GenerativeAiInferenceClient({
-  authenticationDetailsProvider:
-    new ConfigFileAuthenticationDetailsProvider(),
+  authenticationDetailsProvider: new ConfigFileAuthenticationDetailsProvider(),
 });
 
 const model = new OciGenAiGenericChat({
@@ -258,15 +256,12 @@ const model = new OciGenAiGenericChat({
   onDemandModelId: "meta.llama-3.3-70b-instruct",
 });
 
-const response = await model.invoke(
-  "Tell me a joke about beagles.",
-  {
-    requestParams: {
-      temperature: 1,
-      maxTokens: 300,
-    },
-  }
-);
+const response = await model.invoke("Tell me a joke about beagles.", {
+  requestParams: {
+    temperature: 1,
+    maxTokens: 300,
+  },
+});
 
 console.log(response.content);
 console.log(response.usage_metadata);
@@ -284,9 +279,7 @@ For legacy Cohere V1 requests, see the [CohereChatRequest API documentation](htt
 `OciGenAiGenericChat` supports LangChain streaming through the standard `stream()` API.
 
 ```ts
-const stream = await model.stream(
-  "Explain OCI Generative AI."
-);
+const stream = await model.stream("Explain OCI Generative AI.");
 
 for await (const chunk of stream) {
   process.stdout.write(String(chunk.content));
@@ -366,18 +359,16 @@ const structuredModel = model.withStructuredOutput(
   })
 );
 
-const result = await structuredModel.invoke(
-  "Describe OCI Generative AI."
-);
+const result = await structuredModel.invoke("Describe OCI Generative AI.");
 
 console.log(result);
 ```
 
 Use structured output when the application needs model responses that conform to a defined schema rather than free-form text.
 
-`OciGenAiGenericChat` currently implements structured output through function
-calling. LangChain `jsonMode` and `strict` structured-output options are not
-implemented by this adapter.
+`OciGenAiGenericChat` currently supports structured output only through
+function calling. LangChain `jsonMode`, `jsonSchema`, and `strict`
+structured-output options are not implemented by this adapter.
 
 ## Embeddings
 
@@ -385,13 +376,13 @@ implemented by this adapter.
 
 It supports:
 
-* On-demand models
-* Dedicated endpoints
-* Batching of document inputs
-* `inputType` for model-specific purposes such as `SEARCH_DOCUMENT` and `SEARCH_QUERY`
-* `truncate`
-* `outputDimensions`
-* The same OCI authentication and client lifecycle options as the chat integrations
+- On-demand models
+- Dedicated endpoints
+- Batching of document inputs
+- `inputType` for model-specific purposes such as `SEARCH_DOCUMENT` and `SEARCH_QUERY`
+- `truncate`
+- `outputDimensions`
+- The same OCI authentication and client lifecycle options as the chat integrations
 
 OCI accepts up to 96 text inputs per `embedText` request. `OciGenAiEmbeddings` uses a default batch size of 96 and allows the batch size to be configured.
 
@@ -431,14 +422,17 @@ const embeddings = new OciGenAiEmbeddings({
   inputType: models.EmbedTextDetails.InputType.SearchQuery,
 });
 
-const queryVector = await embeddings.embedQuery(
-  "What does OCI provide?"
-);
+const queryVector = await embeddings.embedQuery("What does OCI provide?");
 
 console.log(queryVector);
 
 await embeddings.close();
 ```
+
+`inputType` is configured per `OciGenAiEmbeddings` instance and applies to both
+`embedDocuments()` and `embedQuery()`. For asymmetric retrieval, use a
+`SEARCH_DOCUMENT`-configured instance while indexing documents and a separate
+`SEARCH_QUERY`-configured instance while embedding search queries.
 
 ### Dedicated embedding endpoint
 
@@ -550,11 +544,11 @@ The current integration is intentionally focused on text-based OCI Generative AI
 
 In particular:
 
-* `OciGenAiCohereChat` uses the legacy Cohere V1 API format.
-* Current Cohere chat models requiring Cohere V2 are not supported by `OciGenAiCohereChat`.
-* Tool-result round trips are supported for the Generic integration, not the legacy Cohere integration.
-* Chat message content is currently text-only. Multimodal message blocks such as images, audio, video, or documents are not supported by the current chat adapter.
-* `OciGenAiEmbeddings` currently uses OCI's `embedText` API for text embeddings.
+- `OciGenAiCohereChat` uses the legacy Cohere V1 API format.
+- Current Cohere chat models requiring Cohere V2 are not supported by `OciGenAiCohereChat`.
+- Tool-result round trips are supported for the Generic integration, not the legacy Cohere integration.
+- Chat message content is currently text-only. Multimodal message blocks such as images, audio, video, or documents are not supported by the current chat adapter.
+- `OciGenAiEmbeddings` currently uses OCI's `embedText` API for text embeddings.
 
 ## Additional information
 
@@ -566,5 +560,5 @@ If you are interested in the Python version of this integration, see the [LangCh
 
 ## Related
 
-* [LangChain chat model conceptual guide](/docs/concepts/#chat-models)
-* [LangChain chat model how-to guides](/docs/how_to/#chat-models)
+- [LangChain chat model conceptual guide](/docs/concepts/#chat-models)
+- [LangChain chat model how-to guides](/docs/how_to/#chat-models)

@@ -163,6 +163,37 @@ test("OciGenAiEmbeddings sends SEARCH_QUERY for query embeddings", async () => {
   });
 });
 
+test("OciGenAiEmbeddings applies an explicit input type to documents and queries", async () => {
+  const client = createClient();
+  client.embedText
+    .mockResolvedValueOnce({ embedTextResult: { embeddings: [[1]] } })
+    .mockResolvedValueOnce({ embedTextResult: { embeddings: [[2]] } });
+  const embeddings = new OciGenAiEmbeddings({
+    client,
+    compartmentId: "ocid1.compartment.oc1..example",
+    onDemandModelId: "cohere.embed-v4.0",
+    inputType: models.EmbedTextDetails.InputType.SearchDocument,
+  });
+
+  await expect(
+    embeddings.embedDocuments(["indexed document"])
+  ).resolves.toEqual([[1]]);
+  await expect(embeddings.embedQuery("search query")).resolves.toEqual([2]);
+
+  expect(client.embedText).toHaveBeenNthCalledWith(1, {
+    embedTextDetails: expect.objectContaining({
+      inputs: ["indexed document"],
+      inputType: "SEARCH_DOCUMENT",
+    }),
+  });
+  expect(client.embedText).toHaveBeenNthCalledWith(2, {
+    embedTextDetails: expect.objectContaining({
+      inputs: ["search query"],
+      inputType: "SEARCH_DOCUMENT",
+    }),
+  });
+});
+
 test("OciGenAiEmbeddings does not call OCI for an empty document array", async () => {
   const client = createClient();
 
