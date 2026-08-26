@@ -560,5 +560,5 @@ If you are interested in the Python version of this integration, see the [LangCh
 
 ## Related
 
-- [LangChain chat model conceptual guide](/docs/concepts/#chat-models)
-- [LangChain chat model how-to guides](/docs/how_to/#chat-models)
+- [LangChain chat model documentation](https://docs.langchain.com/oss/javascript/langchain/models)
+- [LangChain structured output documentation](https://docs.langchain.com/oss/javascript/langchain/structured-output)
