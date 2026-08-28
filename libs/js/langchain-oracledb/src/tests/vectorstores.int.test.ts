@@ -512,31 +512,24 @@ describe("OracleVectorStore", () => {
         const placeholders = storedIdsList
           .map((_, index) => `:${index + 1}`)
           .join(", ");
-        const selectSql = `SELECT external_id, text, id FROM "${tableName}" WHERE external_id IN (${placeholders}) ORDER BY external_id`;
+        const selectSql = `SELECT external_id, text FROM "${tableName}" WHERE external_id IN (${placeholders}) ORDER BY external_id`;
         const selectResult = await verificationConnection.execute(selectSql, storedIdsList, {
           outFormat: oracledb.OUT_FORMAT_OBJECT,
           fetchInfo: {
             TEXT: { type: oracledb.STRING },
-            ID: { type: oracledb.BUFFER },
           },
         });
 
         const rows = (selectResult.rows ?? []) as Array<Record<string, unknown>>;
         expect(rows.length).toBe(docs.length);
 
-        const internalIds: Buffer[] = [];
         for (const row of rows) {
           const textValue = (row.TEXT ?? row.text) as string | undefined;
           expect(textValue).toBeDefined();
           expect(textValue).toContain("updated");
-          const internalId = (row.ID ?? row.id) as Buffer | undefined;
-          expect(internalId).toBeInstanceOf(Buffer);
-          if (internalId) {
-            internalIds.push(internalId);
-          }
         }
 
-        await oraclevs.delete({ ids: internalIds });
+        await oraclevs.delete({ ids: storedIdsList });
 
         const countResult = await verificationConnection.execute(
           `SELECT COUNT(*) FROM "${tableName}" WHERE external_id IN (${placeholders})`,
@@ -1736,15 +1729,18 @@ describe("OracleVectorStore", () => {
       connection = await pool.getConnection();
       const oraclevs = new OracleVS(embedder, dbConfig);
       await oraclevs.initialize();
-      await oraclevs.addDocuments(documents);
+      const externalIds = await oraclevs.addDocuments(documents);
+      if (!externalIds) {
+        throw new Error("Expected addDocuments to return generated ids.");
+      }
 
-      const getIds = async (): Promise<Buffer[]> => {
-        const res = await connection!.execute(`SELECT id FROM "${tableName}"`);
+      const getIds = async (): Promise<string[]> => {
+        const res = await connection!.execute(`SELECT external_id FROM "${tableName}"`);
         return (res.rows ?? []).map((row: unknown) => {
           if (
             !Array.isArray(row) ||
             row.length === 0 ||
-            !Buffer.isBuffer(row[0])
+            typeof row[0] !== "string"
           ) {
             throw new Error(`Unexpected row format: ${JSON.stringify(row)}`);
           }
@@ -1752,14 +1748,14 @@ describe("OracleVectorStore", () => {
         });
       };
 
-      const [id1, id2, idKeep] = await getIds();
+      const [id1, id2, idKeep] = externalIds;
       await oraclevs.delete({ ids: [id1, id2] });
 
       const idsAfterDelete = await getIds();
       expect(idsAfterDelete).toHaveLength(1);
-      expect(idsAfterDelete).toContainEqual(idKeep);
-      expect(idsAfterDelete).not.toContainEqual(id1);
-      expect(idsAfterDelete).not.toContainEqual(id2);
+      expect(idsAfterDelete).toContain(idKeep);
+      expect(idsAfterDelete).not.toContain(id1);
+      expect(idsAfterDelete).not.toContain(id2);
     } finally {
       await connection?.close();
     }
