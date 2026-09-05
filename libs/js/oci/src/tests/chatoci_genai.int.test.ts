@@ -13,6 +13,7 @@ import { GenerativeAiInferenceClient } from "oci-generativeaiinference";
 import { expect, test } from "vitest";
 import { z } from "zod";
 
+import { createAgent, tool } from "langchain";
 import { AIMessageChunk } from "@langchain/core/messages";
 import { OciGenAiCohereChat } from "../cohere_chat.js";
 import { OciGenAiGenericChat } from "../generic_chat.js";
@@ -293,6 +294,139 @@ test.skipIf(
     await chatClass.close();
   }
 });
+
+// Session authentication uses an OCI CLI security-token session stored in
+// the selected config profile. The session profile must contain a
+// security_token_file entry and be valid when this test runs.
+test.skipIf(
+  !selectedFamilies.has("generic") ||
+    !compartmentId ||
+    !process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID ||
+    !process.env.OCI_SESSION_CONFIG_PROFILE
+)("OCI GenAI Generic chat uses session authentication", async () => {
+  const sessionConfigFile = process.env.OCI_SESSION_CONFIG_FILE;
+  const sessionConfigProfile = process.env.OCI_SESSION_CONFIG_PROFILE;
+
+  if (!sessionConfigProfile) {
+    throw new Error(
+      "OCI_SESSION_CONFIG_PROFILE is required for the session-authentication test"
+    );
+  }
+
+  const chatClass = new OciGenAiGenericChat({
+    compartmentId,
+    onDemandModelId:
+      process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+    newClientParams: {
+      authType: OciGenAiNewClientAuthType.Session,
+      authParams: {
+        clientConfigFilePath: sessionConfigFile ?? "",
+        clientProfile: sessionConfigProfile,
+      },
+    },
+  });
+
+  try {
+    const response = await chatClass.invoke("Reply with one short greeting.");
+    expect(response.content.length).toBeGreaterThan(0);
+  } finally {
+    await chatClass.close();
+  }
+});
+
+test.skipIf(
+  !selectedFamilies.has("generic") ||
+    !compartmentId ||
+    !process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID
+)(
+  "OCI GenAI Generic chat supports LangChain agent tool round-trip",
+  async () => {
+    await testGenericChatWithModelFallback(
+      OciGenAiGenericChat,
+      {
+        compartmentId,
+        onDemandModelId:
+          process.env.OCI_GENAI_INTEGRATION_TESTS_GENERIC_ON_DEMAND_MODEL_ID,
+      },
+      async (chatClass) => {
+        let toolCalled = false;
+
+        const queryInfrastructure = tool(
+          async ({
+            resourceType,
+            region,
+          }: {
+            resourceType: string;
+            region: string;
+          }) => {
+            toolCalled = true;
+
+            expect(resourceType).toBe("compute");
+            expect(region).toBe("us-ashburn-1");
+
+            return {
+              status: "healthy",
+              active_instances: 12,
+              cpu_utilization: "45%",
+              alerts: [],
+            };
+          },
+          {
+            name: "query_infrastructure",
+            description: "Query OCI infrastructure status and health metrics.",
+            schema: z.object({
+              resourceType: z.string(),
+              region: z.string(),
+            }),
+          }
+        );
+
+        const agent = createAgent({
+          model: chatClass,
+          tools: [queryInfrastructure],
+          systemPrompt:
+            "You are an infrastructure monitoring assistant. " +
+            "Use query_infrastructure whenever the user asks about OCI infrastructure health.",
+        });
+
+        const result = await agent.invoke({
+          messages: [
+            {
+              role: "user",
+              content:
+                "Check compute resource health in us-ashburn-1 and summarize the result.",
+            },
+          ],
+        });
+
+        expect(toolCalled).toBe(true);
+
+        expect(result.messages.length).toBeGreaterThan(1);
+
+        const toolMessages = result.messages.filter(
+          (message) => message.getType() === "tool"
+        );
+
+        expect(toolMessages.length).toBeGreaterThan(0);
+
+        const lastMessage = result.messages[result.messages.length - 1];
+
+        expect(lastMessage).toBeDefined();
+        expect(lastMessage.getType()).toBe("ai");
+        expect(lastMessage.content).toBeTruthy();
+
+        const finalText =
+          typeof lastMessage.content === "string"
+            ? lastMessage.content
+            : JSON.stringify(lastMessage.content);
+
+        expect(finalText).toContain("healthy");
+        expect(finalText).toContain("12");
+        expect(finalText).toContain("45%");
+      }
+    );
+  }
+);
 
 // The application owns an
 // SDK client built from the default config provider, and closes it itself.
