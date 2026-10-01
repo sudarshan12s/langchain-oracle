@@ -6,7 +6,33 @@ import type { OciGenAiClientParams, OciGenAiServingParams } from "./types.js";
 
 const { DedicatedServingMode, OnDemandServingMode } = models;
 
-/** Parameters for the OCI Generative AI text embeddings integration. */
+/** OCI Embed v4 input content accepted by {@link OciGenAiEmbeddings.embedContents}. */
+export type OciGenAiEmbedContent =
+  | models.EmbedTextContent
+  | models.EmbedImageContent;
+
+/** OCI Embed v4 output encoding requested from the service. */
+export type OciGenAiEmbeddingType = models.EmbedTextDetails.EmbeddingTypes;
+
+/** One embedding in a non-float OCI Embed v4 result. */
+export type OciGenAiEmbeddingVariant = number[] | string;
+
+/** OCI Embed v4 result, including optional non-float output encodings. */
+export interface OciGenAiEmbedContentsResult {
+  /** Float vectors, which OCI returns for every successful embed request. */
+  embeddings: number[][];
+  /** Vectors keyed by each explicitly requested `embeddingTypes` value. */
+  embeddingsByType?: Partial<
+    Record<OciGenAiEmbeddingType, OciGenAiEmbeddingVariant[]>
+  >;
+}
+
+export interface OciGenAiEmbedContentsOptions {
+  /** Override the embedding encodings configured on this instance. */
+  embeddingTypes?: OciGenAiEmbeddingType[];
+}
+
+/** Parameters for the OCI Generative AI embeddings integration. */
 export interface OciGenAiEmbeddingsParams
   extends EmbeddingsParams,
     OciGenAiClientParams,
@@ -21,15 +47,16 @@ export interface OciGenAiEmbeddingsParams
   inputType?: models.EmbedTextDetails.InputType;
   /** Optional output-vector dimension, supported by compatible OCI models. */
   outputDimensions?: number;
+  /** Optional OCI Embed v4 output encodings, such as `float` and `int8`. */
+  embeddingTypes?: OciGenAiEmbeddingType[];
 }
 
 /**
- * LangChain text embeddings backed by OCI Generative AI's `embedText` API.
+ * LangChain embeddings backed by OCI Generative AI's `embedText` API.
  *
- * This integration currently exposes text-only embeddings. OCI Embed 4 also
- * supports multimodal `embedContents`, which can be added in a later
- * provider-specific extension. It shares the chat integration's authenticated
- * SDK-client lifecycle.
+ * The standard LangChain methods return float text embeddings. Embed v4's
+ * {@link embedContents} additionally accepts mixed text/image inputs and can
+ * return OCI's compact embedding encodings alongside float vectors.
  */
 export class OciGenAiEmbeddings extends Embeddings {
   // OCI EmbedText supports at most 96 text inputs per request.
@@ -71,7 +98,14 @@ export class OciGenAiEmbeddings extends Embeddings {
     this._maxConcurrency = maxConcurrency;
     // Retain a top-level copy so later caller mutation cannot alter serving or
     // lifecycle behavior after the embeddings instance is constructed.
-    this._params = { ...params, batchSize, maxConcurrency };
+    this._params = {
+      ...params,
+      ...(params.embeddingTypes
+        ? { embeddingTypes: [...params.embeddingTypes] }
+        : {}),
+      batchSize,
+      maxConcurrency,
+    };
   }
 
   async embedDocuments(documents: string[]): Promise<number[][]> {
@@ -144,6 +178,41 @@ export class OciGenAiEmbeddings extends Embeddings {
   }
 
   /**
+   * Embed OCI Embed v4 text and image content in one request.
+   *
+   * OCI applies aggregate token and image limits to this API, which differ
+   * from the 96-text-input limit used by `embedDocuments()`. Callers therefore
+   * supply one service-valid payload at a time rather than having this method
+   * split content blindly.
+   */
+  async embedContents(
+    embedContents: OciGenAiEmbedContent[],
+    options: OciGenAiEmbedContentsOptions = {}
+  ): Promise<OciGenAiEmbedContentsResult> {
+    OciGenAiEmbeddings._validateEmbedContents(embedContents);
+    const embeddingTypes =
+      options.embeddingTypes ?? this._params.embeddingTypes;
+    OciGenAiEmbeddings._validateEmbeddingTypes(embeddingTypes);
+
+    const result = await this._executeEmbedRequest({
+      embedContents,
+      compartmentId: this._params.compartmentId,
+      servingMode: this._getServingMode(),
+      truncate: this._params.truncate,
+      inputType: this._params.inputType,
+      outputDimensions: this._params.outputDimensions,
+      embeddingTypes,
+    });
+    const parsed = OciGenAiEmbeddings._parseEmbedContentsResponse(result);
+    if (parsed.embeddings.length !== embedContents.length) {
+      throw new Error(
+        `OCI embedding response contained ${parsed.embeddings.length} vectors for ${embedContents.length} inputs`
+      );
+    }
+    return parsed;
+  }
+
+  /**
    * Shuts down an SDK client only when this integration created it.
    * Call close() after active embedding operations complete: closing the OCI
    * SDK client may interrupt requests that are already in flight.
@@ -182,30 +251,35 @@ export class OciGenAiEmbeddings extends Embeddings {
   }
 
   private async _embedInputs(inputs: string[]): Promise<number[][]> {
-    const sdkClient = await this._setupClient();
+    const result = await this._executeEmbedRequest({
+      inputs,
+      compartmentId: this._params.compartmentId,
+      servingMode: this._getServingMode(),
+      truncate: this._params.truncate,
+      inputType: this._params.inputType,
+      outputDimensions: this._params.outputDimensions,
+      embeddingTypes: this._params.embeddingTypes,
+    });
+    const { embeddings } =
+      OciGenAiEmbeddings._parseEmbedContentsResponse(result);
 
-    try {
-      const response = await this.caller.call(() =>
-        sdkClient.client.embedText({
-          embedTextDetails: {
-            inputs,
-            compartmentId: this._params.compartmentId,
-            servingMode: this._getServingMode(),
-            truncate: this._params.truncate,
-            inputType: this._params.inputType,
-            outputDimensions: this._params.outputDimensions,
-          },
-        })
+    if (embeddings.length !== inputs.length) {
+      throw new Error(
+        `OCI embedding response contained ${embeddings.length} vectors for ${inputs.length} inputs`
       );
-      const embeddings = OciGenAiEmbeddings._parseResponse(response);
+    }
 
-      if (embeddings.length !== inputs.length) {
-        throw new Error(
-          `OCI embedding response contained ${embeddings.length} vectors for ${inputs.length} inputs`
-        );
-      }
+    return embeddings;
+  }
 
-      return embeddings;
+  private async _executeEmbedRequest(
+    embedTextDetails: models.EmbedTextDetails
+  ): Promise<responses.EmbedTextResponse> {
+    const sdkClient = await this._setupClient();
+    try {
+      return await this.caller.call(() =>
+        sdkClient.client.embedText({ embedTextDetails })
+      );
     } catch (error) {
       // Use a structural check because errors can originate from another JS
       // realm, and the package's lint rules intentionally prohibit instanceof.
@@ -282,7 +356,7 @@ export class OciGenAiEmbeddings extends Embeddings {
 
   private static _parseResponse(
     response: responses.EmbedTextResponse
-  ): number[][] {
+  ): OciGenAiEmbedContentsResult {
     const embeddings = response.embedTextResult?.embeddings;
 
     if (
@@ -299,7 +373,119 @@ export class OciGenAiEmbeddings extends Embeddings {
       throw new Error("OCI embedding response contained invalid embeddings");
     }
 
-    return embeddings;
+    return {
+      embeddings,
+      ...(response.embedTextResult?.embeddingsByType === undefined
+        ? {}
+        : {
+            embeddingsByType: OciGenAiEmbeddings._parseEmbeddingVariants(
+              response.embedTextResult.embeddingsByType,
+              embeddings.length
+            ),
+          }),
+    };
+  }
+
+  private static _parseEmbedContentsResponse(
+    response: responses.EmbedTextResponse
+  ): OciGenAiEmbedContentsResult {
+    return OciGenAiEmbeddings._parseResponse(response);
+  }
+
+  private static _parseEmbeddingVariants(
+    variants: unknown,
+    expectedCount: number
+  ): OciGenAiEmbedContentsResult["embeddingsByType"] {
+    if (
+      variants === null ||
+      typeof variants !== "object" ||
+      Array.isArray(variants)
+    ) {
+      throw new Error(
+        "OCI embedding response contained invalid embedding variants"
+      );
+    }
+
+    const parsed: Partial<
+      Record<OciGenAiEmbeddingType, OciGenAiEmbeddingVariant[]>
+    > = {};
+    const allowedTypes = new Set<string>(
+      Object.values(models.EmbedTextDetails.EmbeddingTypes)
+    );
+    for (const [type, vectors] of Object.entries(variants)) {
+      if (!allowedTypes.has(type) || !Array.isArray(vectors)) {
+        throw new Error(
+          "OCI embedding response contained invalid embedding variants"
+        );
+      }
+      if (
+        vectors.length !== expectedCount ||
+        !vectors.every(
+          (vector) =>
+            typeof vector === "string" ||
+            (Array.isArray(vector) &&
+              vector.every(
+                (value) => typeof value === "number" && Number.isFinite(value)
+              ))
+        )
+      ) {
+        throw new Error(
+          "OCI embedding response contained invalid embedding variants"
+        );
+      }
+      parsed[type as OciGenAiEmbeddingType] =
+        vectors as OciGenAiEmbeddingVariant[];
+    }
+    return parsed;
+  }
+
+  private static _validateEmbedContents(
+    embedContents: OciGenAiEmbedContent[]
+  ): void {
+    if (!Array.isArray(embedContents) || embedContents.length === 0) {
+      throw new Error(
+        "embedContents must contain at least one text or image input"
+      );
+    }
+    let imageCount = 0;
+    for (const content of embedContents) {
+      if (content.type === models.EmbedTextContent.type) {
+        if (typeof (content as models.EmbedTextContent).text !== "string") {
+          throw new Error("Embed text content must contain a string 'text'");
+        }
+      } else if (content.type === models.EmbedImageContent.type) {
+        const { imageUrl } = content as models.EmbedImageContent;
+        if (typeof imageUrl?.url !== "string" || !imageUrl.url) {
+          throw new Error("Embed image content must contain an image URL");
+        }
+        imageCount += 1;
+      } else {
+        throw new Error(`Unsupported embed content type '${content.type}'`);
+      }
+    }
+    if (imageCount > 1) {
+      throw new Error("OCI Embed v4 accepts at most one image per request");
+    }
+  }
+
+  private static _validateEmbeddingTypes(
+    embeddingTypes: OciGenAiEmbeddingType[] | undefined
+  ): void {
+    if (embeddingTypes === undefined) {
+      return;
+    }
+    const allowedTypes = new Set<string>(
+      Object.values(models.EmbedTextDetails.EmbeddingTypes)
+    );
+    if (
+      embeddingTypes.length === 0 ||
+      embeddingTypes.some((type) => !allowedTypes.has(type)) ||
+      new Set(embeddingTypes).size !== embeddingTypes.length
+    ) {
+      throw new Error(
+        "embeddingTypes must be a non-empty list of unique OCI embedding types"
+      );
+    }
   }
 
   private static _validateParams(params: OciGenAiEmbeddingsParams): void {
@@ -337,5 +523,7 @@ export class OciGenAiEmbeddings extends Embeddings {
     ) {
       throw new Error("maxConcurrency must be a positive integer");
     }
+
+    OciGenAiEmbeddings._validateEmbeddingTypes(params.embeddingTypes);
   }
 }

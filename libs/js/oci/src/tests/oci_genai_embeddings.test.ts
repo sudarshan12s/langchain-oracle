@@ -169,6 +169,124 @@ test("OciGenAiEmbeddings sends SEARCH_QUERY for query embeddings", async () => {
   });
 });
 
+test("OciGenAiEmbeddings supports OCI Embed v4 mixed text/image inputs and variants", async () => {
+  const client = createClient();
+  client.embedText.mockResolvedValue({
+    embedTextResult: {
+      embeddings: [[0.1], [0.2]],
+      embeddingsByType: {
+        float: [[0.1], [0.2]],
+        int8: [[3], [4]],
+        base64: ["AQI=", "AwQ="],
+      },
+    },
+  });
+  const embeddings = createEmbeddings(client);
+
+  await expect(
+    embeddings.embedContents(
+      [
+        { type: models.EmbedTextContent.type, text: "a red square" },
+        {
+          type: models.EmbedImageContent.type,
+          imageUrl: { url: "data:image/png;base64,aW1hZ2U=" },
+        },
+      ],
+      {
+        embeddingTypes: [
+          models.EmbedTextDetails.EmbeddingTypes.Float,
+          models.EmbedTextDetails.EmbeddingTypes.Int8,
+          models.EmbedTextDetails.EmbeddingTypes.Base64,
+        ],
+      }
+    )
+  ).resolves.toEqual({
+    embeddings: [[0.1], [0.2]],
+    embeddingsByType: {
+      float: [[0.1], [0.2]],
+      int8: [[3], [4]],
+      base64: ["AQI=", "AwQ="],
+    },
+  });
+  expect(client.embedText).toHaveBeenCalledWith({
+    embedTextDetails: expect.objectContaining({
+      embedContents: [
+        { type: "TEXT", text: "a red square" },
+        {
+          type: "IMAGE",
+          imageUrl: { url: "data:image/png;base64,aW1hZ2U=" },
+        },
+      ],
+      embeddingTypes: ["float", "int8", "base64"],
+    }),
+  });
+});
+
+test("OciGenAiEmbeddings validates Embed v4 content and result variants", async () => {
+  const client = createClient();
+  const embeddings = createEmbeddings(client);
+
+  await expect(embeddings.embedContents([])).rejects.toThrow(
+    "embedContents must contain at least one text or image input"
+  );
+  await expect(
+    embeddings.embedContents([
+      { type: models.EmbedImageContent.type, imageUrl: {} as models.ImageUrl },
+    ])
+  ).rejects.toThrow("Embed image content must contain an image URL");
+  await expect(
+    embeddings.embedContents([
+      {
+        type: models.EmbedImageContent.type,
+        imageUrl: { url: "data:image/png;base64,aW1hZ2U=" },
+      },
+      {
+        type: models.EmbedImageContent.type,
+        imageUrl: { url: "data:image/png;base64,aW1hZ2U=" },
+      },
+    ])
+  ).rejects.toThrow("OCI Embed v4 accepts at most one image per request");
+  await expect(
+    embeddings.embedContents([
+      { type: models.EmbedTextContent.type, text: "one" },
+    ])
+  ).resolves.toEqual({ embeddings: [[1, 2]] });
+
+  client.embedText.mockResolvedValue({
+    embedTextResult: {
+      embeddings: [[1]],
+      embeddingsByType: { int8: [["not-a-number"]] },
+    },
+  });
+  await expect(
+    embeddings.embedContents([
+      { type: models.EmbedTextContent.type, text: "one" },
+    ])
+  ).rejects.toThrow(
+    "OCI embedding response contained invalid embedding variants"
+  );
+});
+
+test("OciGenAiEmbeddings forwards configured embedding output types", async () => {
+  const client = createClient([[1]]);
+  const embeddings = new OciGenAiEmbeddings({
+    client,
+    compartmentId: "ocid1.compartment.oc1..example",
+    onDemandModelId: "cohere.embed-v4.0",
+    embeddingTypes: [
+      models.EmbedTextDetails.EmbeddingTypes.Float,
+      models.EmbedTextDetails.EmbeddingTypes.Uint8,
+    ],
+  });
+
+  await embeddings.embedQuery("test");
+  expect(client.embedText).toHaveBeenCalledWith({
+    embedTextDetails: expect.objectContaining({
+      embeddingTypes: ["float", "uint8"],
+    }),
+  });
+});
+
 test("OciGenAiEmbeddings applies an explicit input type to documents and queries", async () => {
   const client = createClient();
   client.embedText

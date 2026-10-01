@@ -546,7 +546,7 @@ test("OCI GenAI chat accepts text-only content blocks", () => {
   });
 });
 
-test("OCI GenAI chat rejects mixed text and multimodal content blocks", () => {
+test("OCI GenAI Generic chat accepts mixed text and image content blocks", () => {
   const message = new LangChainHumanMessage({
     content: [
       { type: "text", text: "describe this image" },
@@ -559,7 +559,7 @@ test("OCI GenAI chat rejects mixed text and multimodal content blocks", () => {
   );
   expect(() =>
     new OciGenAiGenericChat(createParams)._prepareRequest([message], {}, false)
-  ).toThrow("Unsupported message content");
+  ).not.toThrow();
 });
 
 test("OCI GenAI chat identifies itself for tracing", () => {
@@ -841,11 +841,100 @@ test("OCI GenAI chat create invalid request messages", async () => {
           "ToolMessage references unknown tool call 'tool'"
         );
       }
-      expect(() =>
-        chatClass._prepareRequest(invalidMessages[2], callOptions, true)
-      ).toThrow("Unsupported message content");
+      const prepareMultimodalMessage = () =>
+        chatClass._prepareRequest(invalidMessages[2], callOptions, true);
+      if (ChatClassType === OciGenAiCohereChat) {
+        expect(prepareMultimodalMessage).toThrow(
+          "Cohere chat requires the final message to be a human message"
+        );
+      } else {
+        expect(prepareMultimodalMessage).not.toThrow();
+      }
     }
   );
+});
+
+test("OCI GenAI Generic chat converts standard and legacy multimodal content", () => {
+  const chat = new OciGenAiGenericChat(createParams);
+  const request = chat._prepareRequest(
+    [
+      new HumanMessage({
+        content: [
+          { type: "text", text: "Describe these inputs." },
+          {
+            type: "image_url",
+            image_url: {
+              url: "data:image/png;base64,aW1hZ2U=",
+              detail: "low",
+            },
+          },
+          {
+            type: "document_url",
+            document_url: {
+              url: "data:application/pdf;base64,cGRm",
+            },
+          },
+          { type: "video", url: "data:video/mp4;base64,dmlkZW8=" },
+          {
+            type: "audio",
+            data: new Uint8Array([1, 2, 3]),
+            mimeType: "audio/wav",
+          },
+        ],
+      } as never),
+    ],
+    {},
+    false
+  ) as GenericChatRequest;
+
+  expect(request.messages).toEqual([
+    {
+      role: GenericUserMessage.role,
+      content: [
+        { type: models.TextContent.type, text: "Describe these inputs." },
+        {
+          type: models.ImageContent.type,
+          imageUrl: {
+            url: "data:image/png;base64,aW1hZ2U=",
+            detail: "LOW",
+          },
+        },
+        {
+          type: models.DocumentContent.type,
+          documentUrl: { url: "data:application/pdf;base64,cGRm" },
+        },
+        {
+          type: models.VideoContent.type,
+          videoUrl: { url: "data:video/mp4;base64,dmlkZW8=" },
+        },
+        {
+          type: models.AudioContent.type,
+          audioUrl: { url: "data:audio/wav;base64,AQID" },
+        },
+      ],
+    },
+  ]);
+});
+
+test("OCI GenAI Cohere V1 rejects multimodal message content", () => {
+  const chat = new OciGenAiCohereChat(createParams);
+  expect(() =>
+    chat._prepareRequest(
+      [
+        new HumanMessage({
+          content: [
+            { type: "text", text: "What is this?" },
+            {
+              type: "image_url",
+              image_url: "data:image/png;base64,aW1hZ2U=",
+            },
+          ],
+        } as never),
+      ],
+      {},
+      false
+    )
+  ).toThrow("Unsupported message content");
 });
 
 const invalidCohereResponseValues = [

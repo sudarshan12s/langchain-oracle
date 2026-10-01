@@ -385,7 +385,8 @@ const structuredModel = model.withStructuredOutput(personSchema, {
 
 ## Embeddings
 
-`OciGenAiEmbeddings` provides text embeddings through OCI's `embedText` API.
+`OciGenAiEmbeddings` provides text embeddings through OCI's `embedText` API,
+plus OCI Embed v4 text-and-image payloads through `embedContents()`.
 
 It supports:
 
@@ -395,6 +396,7 @@ It supports:
 - `inputType` for model-specific purposes such as `SEARCH_DOCUMENT` and `SEARCH_QUERY`
 - `truncate`
 - `outputDimensions`
+- OCI Embed v4 `embeddingTypes`, including compact result variants
 - The same OCI authentication and client lifecycle options as the chat integrations
 
 OCI accepts up to 96 text inputs per `embedText` request. `OciGenAiEmbeddings` uses a default batch size of 96 and allows the batch size to be configured.
@@ -477,6 +479,37 @@ const embeddings = new OciGenAiEmbeddings({
 ```
 
 Use only options supported by the selected OCI embedding model.
+
+### Embed v4 multimodal inputs and output variants
+
+`embedContents()` sends one Embed v4 payload containing text, an image, or
+mixed text and one image (the API allows at most one image). OCI applies aggregate token and image limits to this
+endpoint, so this method does not apply the text-only 96-input batch limit.
+
+```ts
+const result = await embeddings.embedContents(
+  [
+    { type: models.EmbedTextContent.type, text: "A product photo" },
+    {
+      type: models.EmbedImageContent.type,
+      imageUrl: { url: "data:image/png;base64,<base64-image>" },
+    },
+  ],
+  {
+    embeddingTypes: [
+      models.EmbedTextDetails.EmbeddingTypes.Float,
+      models.EmbedTextDetails.EmbeddingTypes.Int8,
+    ],
+  }
+);
+
+console.log(result.embeddings); // float vectors
+console.log(result.embeddingsByType?.int8); // compact OCI vectors
+```
+
+Generic chat models also accept standard LangChain and OpenAI-compatible text,
+image, document, video, and audio blocks. Support depends on the selected OCI
+model. Legacy Cohere V1 chat remains text-only.
 
 ## Development and testing
 
