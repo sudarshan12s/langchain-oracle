@@ -39,7 +39,10 @@ import type { OciGenAiModelCallOptions } from "./types.js";
 
 const {
   AssistantMessage,
+  AudioContent,
+  DocumentContent,
   GenericChatRequest,
+  ImageContent,
   SystemMessage,
   TextContent,
   ToolChoiceAuto,
@@ -48,10 +51,12 @@ const {
   ToolChoiceRequired,
   ToolMessage,
   UserMessage,
+  VideoContent,
 } = models;
 type GenericChatRequest = models.GenericChatRequest;
 type GenericChatResponse = models.GenericChatResponse;
 type Message = models.Message;
+type ChatContent = models.ChatContent;
 type TextContent = models.TextContent;
 type ChatChoice = models.ChatChoice;
 type ToolMessage = models.ToolMessage;
@@ -310,26 +315,29 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
     baseMessage: BaseMessage
   ): Message {
     const messageType: string = baseMessage.getType();
-    const text = OciGenAiBaseChat._contentToText(baseMessage.content);
+    const content = OciGenAiGenericChat._convertContent(baseMessage.content);
 
     switch (messageType) {
       case "ai":
-        return OciGenAiGenericChat._createAssistantMessage(baseMessage, text);
+        return OciGenAiGenericChat._createAssistantMessage(
+          baseMessage,
+          content
+        );
 
       case "tool": {
         const toolMessage = baseMessage as LangChainToolMessage;
         return <ToolMessage>{
           role: ToolMessage.role,
           toolCallId: toolMessage.tool_call_id,
-          content: OciGenAiGenericChat._createTextContent(text),
+          content,
         };
       }
 
       case "system":
-        return OciGenAiGenericChat._createMessage(SystemMessage.role, text);
+        return OciGenAiGenericChat._createMessage(SystemMessage.role, content);
 
       case "human":
-        return OciGenAiGenericChat._createMessage(UserMessage.role, text);
+        return OciGenAiGenericChat._createMessage(UserMessage.role, content);
 
       default:
         throw new Error(`Message type '${messageType}' is not supported`);
@@ -338,7 +346,7 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
 
   static _createAssistantMessage(
     baseMessage: BaseMessage,
-    text: string
+    content: ChatContent[]
   ): Message {
     const toolCalls =
       (
@@ -354,16 +362,14 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
         );
       }
     }
-    const content =
-      text || toolCalls.length === 0
-        ? { content: OciGenAiGenericChat._createTextContent(text) }
-        : {};
+    const assistantContent =
+      content.length > 0 || toolCalls.length === 0 ? { content } : {};
 
     return {
       role: AssistantMessage.role,
       // OCI Generic supports assistant content alongside tool calls. Retain
       // non-empty text so an agent history round trip does not lose it.
-      ...content,
+      ...assistantContent,
       ...(toolCalls.length > 0
         ? {
             toolCalls: toolCalls.map((toolCall) => ({
@@ -377,10 +383,10 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
     } as Message;
   }
 
-  static _createMessage(role: string, text: string): Message {
+  static _createMessage(role: string, content: ChatContent[]): Message {
     return {
       role,
-      content: OciGenAiGenericChat._createTextContent(text),
+      content,
     };
   }
 
@@ -391,6 +397,255 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
         text,
       },
     ];
+  }
+
+  /**
+   * Converts LangChain's standard and OpenAI-compatible content blocks into
+   * OCI Generic chat content. OCI's Generic API supports text, images,
+   * documents, video, and audio; Cohere V1 remains text-only in its own
+   * adapter because its request shape has no equivalent content array.
+   */
+  static _convertContent(content: BaseMessage["content"]): ChatContent[] {
+    if (typeof content === "string") {
+      return OciGenAiGenericChat._createTextContent(content);
+    }
+
+    if (!Array.isArray(content) || content.length === 0) {
+      throw new Error("Unsupported message content");
+    }
+
+    return content.map((block) =>
+      OciGenAiGenericChat._convertContentBlock(block)
+    );
+  }
+
+  static _convertContentBlock(block: unknown): ChatContent {
+    if (typeof block === "string") {
+      return OciGenAiGenericChat._createTextContent(block)[0]!;
+    }
+    if (!OciGenAiGenericChat._isRecord(block)) {
+      throw new Error("Unsupported message content block");
+    }
+
+    const { type } = block;
+    if (type === "text" || type === "text-plain") {
+      if (typeof block.text !== "string") {
+        throw new Error("Text content block must contain a string 'text'");
+      }
+      return OciGenAiGenericChat._createTextContent(block.text)[0]!;
+    }
+
+    if (type === "image_url") {
+      return OciGenAiGenericChat._createMediaContent(
+        "image",
+        OciGenAiGenericChat._urlFromLegacyImageBlock(block)
+      );
+    }
+
+    if (type === "media") {
+      return OciGenAiGenericChat._createMediaContent(
+        OciGenAiGenericChat._mediaKindFromMimeType(block.mime_type),
+        OciGenAiGenericChat._urlFromMediaData(block)
+      );
+    }
+
+    const kind = OciGenAiGenericChat._mediaKindFromBlockType(type);
+    if (kind) {
+      const legacyValue = OciGenAiGenericChat._legacyMediaValue(block, type);
+      return OciGenAiGenericChat._createMediaContent(
+        kind,
+        OciGenAiGenericChat._urlFromMediaData(legacyValue)
+      );
+    }
+
+    throw new Error(`Unsupported message content type '${String(type)}'`);
+  }
+
+  static _isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  static _mediaKindFromBlockType(
+    type: unknown
+  ): "image" | "document" | "video" | "audio" | undefined {
+    switch (type) {
+      case "image":
+        return "image";
+      case "document":
+      case "document_url":
+      case "file":
+        return "document";
+      case "video":
+      case "video_url":
+        return "video";
+      case "audio":
+      case "audio_url":
+        return "audio";
+      default:
+        return undefined;
+    }
+  }
+
+  static _mediaKindFromMimeType(
+    mimeType: unknown
+  ): "image" | "document" | "video" | "audio" {
+    if (typeof mimeType !== "string") {
+      throw new Error("Media content block must contain a string 'mime_type'");
+    }
+    if (mimeType.startsWith("image/")) {
+      return "image";
+    }
+    if (mimeType.startsWith("video/")) {
+      return "video";
+    }
+    if (mimeType.startsWith("audio/")) {
+      return "audio";
+    }
+    if (mimeType === "application/pdf") {
+      return "document";
+    }
+    throw new Error(`Unsupported media MIME type '${mimeType}'`);
+  }
+
+  static _legacyMediaValue(
+    block: Record<string, unknown>,
+    type: unknown
+  ): Record<string, unknown> {
+    let field: "document_url" | "video_url" | "audio_url" | undefined;
+    switch (type) {
+      case "document":
+      case "document_url":
+        field = "document_url";
+        break;
+      case "video":
+      case "video_url":
+        field = "video_url";
+        break;
+      case "audio":
+      case "audio_url":
+        field = "audio_url";
+        break;
+      default:
+        field = undefined;
+    }
+    const value = field && field in block ? block[field] : block;
+    if (typeof value === "string") {
+      return { url: value };
+    }
+    if (!OciGenAiGenericChat._isRecord(value)) {
+      throw new Error("Media content block must contain a URL or base64 data");
+    }
+    return value;
+  }
+
+  static _urlFromLegacyImageBlock(block: Record<string, unknown>) {
+    const imageUrl = block.image_url;
+    if (typeof imageUrl === "string") {
+      return { url: imageUrl };
+    }
+    if (!OciGenAiGenericChat._isRecord(imageUrl)) {
+      throw new Error("Image content block must contain an image URL");
+    }
+    return OciGenAiGenericChat._urlFromMediaData(imageUrl);
+  }
+
+  static _urlFromMediaData(block: Record<string, unknown>) {
+    if (typeof block.url === "string" && block.url.length > 0) {
+      return {
+        url: block.url,
+        ...OciGenAiGenericChat._ociDetail(block.detail),
+      };
+    }
+    if (
+      typeof block.data === "string" ||
+      OciGenAiGenericChat._isUint8Array(block.data)
+    ) {
+      if (
+        typeof block.mimeType !== "string" &&
+        typeof block.mime_type !== "string"
+      ) {
+        throw new Error("Base64 media content block must contain a MIME type");
+      }
+      const mimeType = (block.mimeType ?? block.mime_type) as string;
+      const data =
+        typeof block.data === "string"
+          ? block.data
+          : OciGenAiGenericChat._base64FromBytes(block.data);
+      return {
+        url: data.startsWith("data:")
+          ? data
+          : `data:${mimeType};base64,${data}`,
+        ...OciGenAiGenericChat._ociDetail(block.detail),
+      };
+    }
+    if (typeof block.fileId === "string" || typeof block.id === "string") {
+      throw new Error(
+        "OCI Generic chat does not support file-ID content blocks"
+      );
+    }
+    throw new Error("Media content block must contain a URL or base64 data");
+  }
+
+  static _ociDetail(detail: unknown): { detail?: "AUTO" | "LOW" | "HIGH" } {
+    if (detail === undefined) {
+      return {};
+    }
+    switch (detail) {
+      case "auto":
+      case "AUTO":
+        return { detail: "AUTO" };
+      case "low":
+      case "LOW":
+        return { detail: "LOW" };
+      case "high":
+      case "HIGH":
+        return { detail: "HIGH" };
+      default:
+        throw new Error(`Unsupported media detail '${String(detail)}'`);
+    }
+  }
+
+  static _isUint8Array(value: unknown): value is Uint8Array {
+    // Avoid `instanceof`: callers can supply a Uint8Array from another realm.
+    return Object.prototype.toString.call(value) === "[object Uint8Array]";
+  }
+
+  static _base64FromBytes(bytes: Uint8Array): string {
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+    return btoa(binary);
+  }
+
+  static _createMediaContent(
+    kind: "image" | "document" | "video" | "audio",
+    url: { url: string; detail?: "AUTO" | "LOW" | "HIGH" }
+  ): ChatContent {
+    switch (kind) {
+      case "image":
+        return {
+          type: ImageContent.type,
+          imageUrl: url,
+        } as models.ImageContent;
+      case "document":
+        return {
+          type: DocumentContent.type,
+          documentUrl: url,
+        } as models.DocumentContent;
+      case "video":
+        return {
+          type: VideoContent.type,
+          videoUrl: url,
+        } as models.VideoContent;
+      case "audio":
+        return {
+          type: AudioContent.type,
+          audioUrl: url,
+        } as models.AudioContent;
+      default:
+        throw new Error(`Unsupported OCI media kind '${kind}'`);
+    }
   }
 
   static _isGenericResponse(
@@ -483,10 +738,17 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
     );
   }
 
-  static _isValidContentArray(content: TextContent[] | undefined): boolean {
+  static _isValidContentArray(content: ChatContent[] | undefined): boolean {
     return (
       Array.isArray(content) &&
-      content.every(OciGenAiGenericChat._isValidTextContent)
+      content.every(OciGenAiGenericChat._isValidChatContent)
+    );
+  }
+
+  static _isValidChatContent(content: unknown): content is ChatContent {
+    return (
+      OciGenAiGenericChat._isValidTextContent(content) ||
+      OciGenAiGenericChat._isValidMediaContent(content)
     );
   }
 
@@ -499,10 +761,35 @@ export class OciGenAiGenericChat extends OciGenAiBaseChat<GenericCallOptions> {
     );
   }
 
+  static _isValidMediaContent(content: unknown): boolean {
+    if (!OciGenAiGenericChat._isRecord(content)) {
+      return false;
+    }
+    const media = [
+      [ImageContent.type, "imageUrl"],
+      [DocumentContent.type, "documentUrl"],
+      [VideoContent.type, "videoUrl"],
+      [AudioContent.type, "audioUrl"],
+    ] as const;
+    return media.some(([type, urlField]) => {
+      const url = content[urlField];
+      return (
+        content.type === type &&
+        OciGenAiGenericChat._isRecord(url) &&
+        typeof url.url === "string"
+      );
+    });
+  }
+
   static _getChunkDataText(chunkData: ChatChoice): string | undefined {
     // Match non-streaming response parsing: OCI content parts are contiguous.
-    return chunkData.message?.content
-      ?.map((message: TextContent) => message.text)
+    const content = chunkData.message?.content;
+    if (!content) {
+      return undefined;
+    }
+    return content
+      .filter(OciGenAiGenericChat._isValidTextContent)
+      .map((message) => message.text)
       .join("");
   }
 

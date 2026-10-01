@@ -295,9 +295,10 @@ export abstract class OciGenAiBaseChat<RequestType> extends BaseChatModel<
       throw new Error("No messages provided");
     }
 
-    for (const message of messages) {
-      OciGenAiBaseChat._contentToText(message.content);
-    }
+    // Content is validated by the provider adapter. Generic chat supports OCI
+    // media content while the legacy Cohere V1 adapter intentionally accepts
+    // text only, so a shared text-only check here would reject valid Generic
+    // requests before that adapter gets a chance to convert them.
   }
 
   static _contentToText(content: BaseMessage["content"]): string {

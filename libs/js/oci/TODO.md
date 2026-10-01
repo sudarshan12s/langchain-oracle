@@ -13,9 +13,12 @@ follow-up scope rather than a prerequisite for the initial release.
   tool calls and `ToolMessage`; Cohere V1 needs a dedicated adapter because its
   tool calls have no provider-generated call IDs and its request shape separates
   the current human message from tool results.
-- [ ] Support multimodal message content where the OCI model/API supports it.
-- [ ] Extend `OciGenAiEmbeddings` from its text-only MVP to OCI Embed v4
-  multimodal `embedContents` inputs and embedding-type output variants.
+- [x] Support multimodal message content where the OCI model/API supports it.
+  `OciGenAiGenericChat` maps text, image, document, video, and audio blocks;
+  legacy Cohere V1 remains text-only because its OCI request format has no
+  multimodal content array.
+- [x] Extend `OciGenAiEmbeddings` to OCI Embed v4 multimodal `embedContents`
+  inputs and embedding-type output variants.
 - [ ] Add OCI Cohere V2 API support. `OciGenAiCohereChat` currently uses the
   legacy Cohere V1 API format only.
 
