@@ -121,10 +121,10 @@ jobs:
         run: corepack enable pnpm
 
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
-      - name: Format, lint, unit test, and build
-        run: pnpm format:check && pnpm lint && pnpm test:standard:unit && pnpm build
+      - name: Format, lint, test, and build
+        run: pnpm format:check && pnpm lint && pnpm test && pnpm build
 
   ci_success:
     name: "CI Success"
